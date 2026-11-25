@@ -8,6 +8,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from analysis.abilities import CATEGORIES, ability_mapping
+from analysis.counter_plan import generate_counter_cards
 from analysis.map_shape import density_for_points, load_map_shapes
 from analysis.operator import (
     aggressiveness_label,
@@ -122,6 +123,19 @@ def _persist_filter_value(widget_key, persistent_key):
         st.session_state[persistent_key] = value
 
 
+def _navigate_counter_card(target_tab, map_name, selected_side, team_id, category=None, agent=None):
+    st.session_state["scout_tabs"] = target_tab
+    st.session_state["shared_side"] = selected_side
+    tab_key = "operator" if target_tab == "Operator Profiler" else "utility"
+    map_widget_key = f"{tab_key}_map_widget_{team_id}"
+    persistent_map_key = f"{tab_key}_map_selection_{team_id}"
+    st.session_state[map_widget_key] = map_name
+    st.session_state[persistent_map_key] = map_name
+    if target_tab == "Utility Map":
+        st.session_state["ability_category"] = category or "all"
+        st.session_state[f"utility_agent_widget_{team_id}"] = agent or "all"
+
+
 def _sentinel_summary(buys, team_id, map_name):
     selected = buys[
         buys["team_id"].astype(str).eq(str(team_id))
@@ -225,13 +239,20 @@ def _map_figure(shape, casts, zones, show_dots, map_name, site_centres):
     return figure
 
 
-def _operator_strip_figure(rounds, player_shares):
+def _operator_strip_figure(rounds, player_shares, show_all=False):
     ordered = rounds.copy()
+    figure = go.Figure()
+    if ordered.empty:
+        figure.update_layout(template="plotly_dark", height=150)
+        return figure
     ordered["_round_order"] = pd.to_numeric(ordered["round_number"], errors="coerce")
-    ordered["_game_order"] = pd.to_numeric(ordered.get("game_number"), errors="coerce")
-    ordered = ordered.sort_values(
-        ["series_id", "_game_order", "game_id", "_round_order"], kind="stable",
-    ).reset_index(drop=True)
+    if "round_start_time" not in ordered:
+        ordered["round_start_time"] = None
+    ordered["_date_order"] = pd.to_datetime(ordered["round_start_time"], utc=True, errors="coerce")
+    for column in ("game_number", "opponent_name", "map"):
+        if column not in ordered:
+            ordered[column] = None
+    ordered["_game_order"] = pd.to_numeric(ordered["game_number"], errors="coerce")
     palette = ["#38bdf8", "#f97316", "#a78bfa", "#34d399", "#f472b6", "#facc15", "#fb7185"]
     player_info = {}
     for row in player_shares.drop_duplicates("player_id").itertuples(index=False):
@@ -239,30 +260,59 @@ def _operator_strip_figure(rounds, player_shares):
             "name": row.player_name,
             "color": palette[len(player_info) % len(palette)],
         }
-    points = {"No Operator": [], "Snapshot unavailable": [], "Multiple holders": []}
-    game_labels = []
-    game_ticks = []
+    game_rows = []
+    for (series_id, game_id), game in ordered.groupby(["series_id", "game_id"], sort=False):
+        first = game.iloc[0]
+        game_number = first.get("game_number")
+        opponent = first.get("opponent_name")
+        map_name = first.get("map")
+        game_date = game["_date_order"].dropna().max()
+        game_rows.append({
+            "series_id": str(series_id), "game_id": str(game_id),
+            "game_number": str(game_number) if pd.notna(game_number) and str(game_number).strip() else "?",
+            "opponent": str(opponent) if pd.notna(opponent) and str(opponent).strip() else "Unknown opponent",
+            "map": str(map_name).title() if pd.notna(map_name) and str(map_name).strip() else "Unknown map",
+            "date": game_date,
+            "game_order": pd.to_numeric(game_number, errors="coerce"),
+        })
+    game_rows.sort(
+        key=lambda item: (
+            pd.isna(item["date"]),
+            -item["date"].value if pd.notna(item["date"]) else 0,
+            -(item["game_order"] if pd.notna(item["game_order"]) else -1),
+            item["series_id"], item["game_id"],
+        ),
+    )
+    if not show_all:
+        game_rows = game_rows[:15]
+    visible_games = {(row["series_id"], row["game_id"]) for row in game_rows}
+    ordered = ordered[
+        ordered.apply(lambda row: (str(row["series_id"]), str(row["game_id"])) in visible_games, axis=1)
+    ].copy()
+    game_labels = {}
     row_positions = {}
-    game_groups = list(ordered.groupby(["series_id", "game_id"], sort=False))
-    for game_index, ((_, _), game) in enumerate(game_groups):
-        game_row = game.iloc[0]
-        game_number = game_row.get("game_number")
-        game_number = str(game_number) if pd.notna(game_number) and str(game_number).strip() else str(game_index + 1)
-        opponent = game_row.get("opponent_name")
-        opponent = str(opponent) if pd.notna(opponent) and str(opponent).strip() else "Unknown opponent"
-        game_labels.append(f"vs {opponent} · G{game_number}")
-        game_ticks.append(float(game_index) * 1.3)
+    game_ticks = []
+    for game_index, game_row in enumerate(game_rows):
+        date = game_row["date"].strftime("%Y-%m-%d") if pd.notna(game_row["date"]) else "Date unknown"
+        label = f"{date} · vs {game_row['opponent']} · {game_row['map']} · G{game_row['game_number']}"
+        game_key = (game_row["series_id"], game_row["game_id"])
+        game_labels[game_key] = label
+        y = float(len(game_rows) - game_index - 1) * 1.3
+        game_ticks.append((y, label))
+        game = ordered[
+            ordered["series_id"].astype(str).eq(game_row["series_id"])
+            & ordered["game_id"].astype(str).eq(game_row["game_id"])
+        ]
         for row in game.itertuples(index=False):
-            row_positions[(str(row.series_id), str(row.game_id), str(row.round_number))] = float(game_index) * 1.3
+            row_positions[(str(row.series_id), str(row.game_id), str(row.round_number))] = y
+
+    points = {"No Operator": [], "Snapshot unavailable": [], "Multiple holders": []}
 
     for row in ordered.itertuples(index=False):
         holders = tuple(row.holders)
         names = tuple(row.holder_names)
         holder_label = ", ".join(names) if names else ("No Operator recorded" if not holders else "Holder name unavailable")
-        game_label = game_labels[next(
-            index for index, ((series_id, game_id), _) in enumerate(game_groups)
-            if str(series_id) == str(row.series_id) and str(game_id) == str(row.game_id)
-        )]
+        game_label = game_labels[(str(row.series_id), str(row.game_id))]
         x = float(row.round_number) if pd.notna(row.round_number) else 0.0
         y = row_positions[(str(row.series_id), str(row.game_id), str(row.round_number))]
         hover = f"{game_label} · Round {row.round_number}<br>{holder_label}"
@@ -295,15 +345,16 @@ def _operator_strip_figure(rounds, player_shares):
             text=[hover for _, _, hover in selections], hovertemplate="%{text}<extra></extra>", name=label,
         ))
     max_round = int(ordered["_round_order"].max()) if not ordered.empty and ordered["_round_order"].notna().any() else 1
-    chart_height = max(180, 38 * len(game_labels) + 70)
+    chart_height = max(150, 34 * len(game_rows) + 36)
     figure.update_layout(
-        template="plotly_dark", height=chart_height, margin={"l": 8, "r": 8, "t": 8, "b": 24},
+        template="plotly_dark", height=chart_height, margin={"l": 8, "r": 8, "t": 4, "b": 24},
         plot_bgcolor="#111827", paper_bgcolor="#111827", showlegend=True,
-        legend={"orientation": "h", "y": 1.15, "x": 0},
+        legend={"orientation": "h", "y": 1.0, "yanchor": "top", "x": 0},
         xaxis={"title": "Round number", "range": [0.5, max_round + 0.5], "dtick": 1,
                "showgrid": False, "zeroline": False},
-        yaxis={"tickmode": "array", "tickvals": game_ticks, "ticktext": game_labels,
-               "range": [-0.5, max(0.5, len(game_labels) * 1.3 - 0.8)],
+        yaxis={"tickmode": "array", "tickvals": [tick for tick, _ in game_ticks],
+               "ticktext": [label for _, label in game_ticks],
+               "range": [-0.5, max(0.5, (len(game_rows) - 1) * 1.3 + 0.5)],
                "showgrid": False, "zeroline": False},
     )
     return figure
@@ -313,51 +364,64 @@ def _team_possessive(team_name):
     return f"{team_name}'" if str(team_name).rstrip().casefold().endswith("s") else f"{team_name}'s"
 
 
-def _operator_headline(team_name, primary, total_rounds, engagements, map_name, selected_side):
-    if primary is None:
-        return None
-    player_name = primary["player_name"]
-    held_rounds = int(primary["rounds"])
-    possessive = _team_possessive(team_name)
-    if selected_side != "defense":
-        scope = "attack rounds across all maps" if map_name == "All maps" else f"{map_name.title()} attack rounds"
-        return f"{possessive} primary Operator player {player_name} held it in {held_rounds} of {total_rounds} {scope}; the angle profile below uses defense engagements."
-    if len(engagements) < 10:
-        suggestion = "; try All maps" if map_name != "All maps" else ""
-        scope = "defense rounds across all maps" if map_name == "All maps" else f"{map_name.title()} defense rounds"
-        return (
-            f"{possessive} primary Operator player {player_name} held it in {held_rounds} of {total_rounds} "
-            f"{scope} — too few engagements to profile angles here{suggestion}."
-        )
+def _operator_headline(
+    team_name, primary, total_rounds, engagements, map_name, selected_side,
+    operator_rounds=None, side_buy_rates=None,
+):
+    facts = []
+    if primary is not None:
+        player_name = primary["player_name"]
+        held_rounds = int(primary["rounds"])
+        operator_rounds = int(operator_rounds or primary.get("operator_rounds", 0))
+        if operator_rounds:
+            share = float(primary.get("share", 100 * held_rounds / operator_rounds))
+            facts.append(
+                f"{player_name} holds {_team_possessive(team_name)} Operator in {share:.0f}% of their "
+                f"{selected_side} Operator rounds ({held_rounds}/{operator_rounds})."
+            )
+    side_buy_rates = side_buy_rates or {}
+    attack = side_buy_rates.get("attacker", {})
+    defense = side_buy_rates.get("defender", {})
+    if attack.get("observed_rounds", 0) and defense.get("observed_rounds", 0):
+        attack_text = f"{attack['rate']:.0f}% ({attack['held_rounds']}/{attack['observed_rounds']})"
+        defense_text = f"{defense['rate']:.0f}% ({defense['held_rounds']}/{defense['observed_rounds']})"
+        if defense["rate"] > attack["rate"]:
+            facts.append(
+                f"{team_name} buy the Operator in {defense_text} of defense rounds but only "
+                f"{attack_text} on attack."
+            )
+        elif attack["rate"] > defense["rate"]:
+            facts.append(
+                f"{team_name} buy the Operator in {attack_text} of attack rounds but only "
+                f"{defense_text} on defense."
+            )
+        else:
+            facts.append(f"{team_name} buy the Operator in {attack_text} of attack and defense rounds.")
 
-    seconds = pd.to_numeric(engagements["seconds_into_round"], errors="coerce")
-    timed = engagements[seconds.notna()]
-    early = timed[pd.to_numeric(timed["seconds_into_round"], errors="coerce").between(0, 20, inclusive="left")]
-    if map_name == "All maps":
-        if timed.empty:
-            return f"{possessive} primary Operator player {player_name} has {len(engagements)} defense engagements across all maps; event timing is unavailable."
-        return (
-            f"{possessive} primary Operator player {player_name} has {100 * len(early) / len(timed):.0f}% of "
-            f"their defense Operator engagements in 0–20 s ({len(early)}/{len(timed)}) across all maps."
-        )
-
-    known = engagements[~engagements["aggressiveness"].eq("unknown")]
-    known_counts = known["aggressiveness"].value_counts()
-    if not known.empty and known_counts.iloc[0] / len(known) >= 0.5:
-        angle_style = {
-            "aggressive": "holds aggressive angles",
-            "passive": "holds passive angles",
-            "standard": "takes standard angles",
-        }.get(known_counts.index[0], "engages")
-    else:
-        angle_style = "engages"
-    site = _most_common(engagements["site_label"]) or "an unknown area"
-    timing = (
-        f"{100 * len(early) / len(timed):.0f}% of their Op engagements happen 0–20 s into the round "
-        f"({len(early)}/{len(timed)})"
-        if not timed.empty else "engagement timing is unavailable"
-    )
-    return f"{possessive} primary Operator player {player_name} {angle_style} at {site} — {timing} on {map_name.title()}."
+    if primary is not None and selected_side == "defense":
+        if len(engagements) < 10:
+            suggestion = "; try All maps" if map_name != "All maps" else ""
+            facts.append(f"Too few player engagements to profile angles here{suggestion}.")
+        else:
+            timed = pd.to_numeric(engagements["seconds_into_round"], errors="coerce").dropna()
+            if len(timed) >= 10:
+                early = int(timed.between(0, 20, inclusive="left").sum())
+                facts.append(
+                    f"{100 * early / len(timed):.0f}% of {primary['player_name']}'s defense Operator engagements "
+                    f"happen in 0–20 s ({early}/{len(timed)})."
+                )
+            known = engagements.loc[
+                ~engagements["aggressiveness"].eq("unknown"), "aggressiveness",
+            ].value_counts()
+            if int(known.sum()) >= 10 and known.iloc[0] / known.sum() >= 0.5:
+                angle_style = {
+                    "aggressive": "holds aggressive angles",
+                    "passive": "holds passive angles",
+                    "standard": "takes standard angles",
+                }.get(known.index[0], "engages")
+                site = _most_common(engagements["site_label"]) or "an unknown area"
+                facts.append(f"{primary['player_name']} {angle_style} at {site}.")
+    return " ".join(facts) if facts else None
 
 
 def _operator_map_figure(shape, engagements, map_name, site_centres):
@@ -452,9 +516,13 @@ def _render_utility_tab(tables, team_name, team_id, map_name, selected_side, sid
         "Player (optional)", player_ids, format_func=lambda value: player_labels[value],
     )
     agent_options = sorted(matched["agent"].dropna().astype(str).unique(), key=str.casefold)
+    agent_widget_key = f"utility_agent_widget_{team_id}"
+    if st.session_state.get(agent_widget_key, "all") not in ["all", *agent_options]:
+        st.session_state[agent_widget_key] = "all"
     agent = st.sidebar.selectbox(
         "Agent (optional)", ["all", *agent_options],
         format_func=lambda value: "All agents" if value == "all" else value.title(),
+        key=agent_widget_key,
     )
     time_window = st.sidebar.slider(
         "Live round time window (seconds)", min_value=0, max_value=100, value=(0, 100), step=5,
@@ -608,6 +676,8 @@ def _render_operator_tab(tables, team_name, team_id, map_name, selected_side, sh
     headline = _operator_headline(
         team_name, primary, selected_rates["overall"]["observed_rounds"],
         primary_engagements, map_name, selected_side,
+        operator_rounds=selected_rates["overall"]["held_rounds"],
+        side_buy_rates=rates["by_side"],
     )
     st.markdown(f"**{team_name} Operator profile · {display_map}**")
     if headline:
@@ -654,7 +724,13 @@ def _render_operator_tab(tables, team_name, team_id, map_name, selected_side, sh
         )
 
     st.subheader(f"Possession · {selected_side.title()} rounds")
-    st.plotly_chart(_operator_strip_figure(strip_rounds, selected_rates["players"]), width="stretch")
+    show_all_games = st.toggle("Show all games", value=False, key="operator_show_all_games")
+    if not show_all_games and strip_rounds[["series_id", "game_id"]].drop_duplicates().shape[0] > 15:
+        st.caption("Showing the 15 most recent games.")
+    st.plotly_chart(
+        _operator_strip_figure(strip_rounds, selected_rates["players"], show_all=show_all_games),
+        width="stretch",
+    )
     st.metric(
         "Handoff rate between consecutive Operator rounds",
         f"{handoff['handoffs']} / {handoff['comparisons']} ({handoff['rate']:.0f}%)",
@@ -689,6 +765,42 @@ def _render_operator_tab(tables, team_name, team_id, map_name, selected_side, sh
     )
 
 
+def _render_counter_plan_tab(tables, team_name, team_id, map_name, selected_side, side, site_centres):
+    denominator = eligible_rounds(tables["rounds"], team_id, map_name, side)
+    round_count = denominator[["series_id", "game_id", "round_number"]].drop_duplicates().shape[0]
+    series_count = int(denominator["series_id"].nunique())
+    title = "Self-scout: predictable habits" if team_name in {"Cloud9", "Cloud9 GC"} else "Counter Plan"
+    st.subheader(f"{title} · {map_name.title()} · {selected_side.title()}")
+    evidence = st.columns(2)
+    evidence[0].metric("Series analysed", f"{series_count:,}")
+    evidence[1].metric("Rounds analysed", f"{round_count:,}")
+    if round_count < 20:
+        st.warning(f"Small sample: only {round_count} {selected_side} rounds match this team/map/side selection.")
+    st.caption("Rule-based templates from local cache evidence; no external AI service is used.")
+    cards = generate_counter_cards(
+        tables["rounds"], tables["casts"], tables["buys"], tables["kills"], tables["damage"],
+        tables["spawn_positions"], team_id, team_name, map_name, side, site_centres,
+        self_scout=team_name in {"Cloud9", "Cloud9 GC"},
+    )
+    if not cards:
+        st.info("No strong tendencies at this sample size.")
+        return
+    for index, card in enumerate(cards):
+        with st.container(border=True):
+            st.markdown(f"**{card['tendency']}**")
+            st.caption(f"Evidence: {card['evidence']} · Confidence: {card['confidence']}")
+            st.write(f"Suggested response: {card['response']}")
+            st.button(
+                "Show on map",
+                key=f"counter_show_{index}_{card['type'].lower().replace(' ', '_')}",
+                on_click=_navigate_counter_card,
+                args=(
+                    card["navigation_tab"], map_name, selected_side, team_id,
+                    card.get("category"), card.get("agent"),
+                ),
+            )
+
+
 def main():
     try:
         signature = tuple((CACHE_DIR / f"{name}.parquet").stat().st_mtime_ns for name in TABLE_NAMES)
@@ -721,10 +833,22 @@ def main():
         st.warning("No rounds are available for this team.")
         st.stop()
     active_tab = st.session_state.get("scout_tabs", "Utility Map")
+    counter_tab_label = (
+        "Self-scout: predictable habits"
+        if selected_team["team_name"] in {"Cloud9", "Cloud9 GC"} else "Counter Plan"
+    )
+    if active_tab in {"Counter Plan", "Self-scout: predictable habits"}:
+        if active_tab != counter_tab_label:
+            st.session_state["scout_tabs"] = counter_tab_label
+            active_tab = counter_tab_label
     if active_tab == "Operator Profiler":
         map_options = ["All maps", *maps]
         map_widget_key = f"operator_map_widget_{team_id}"
         persistent_map_key = f"operator_map_selection_{team_id}"
+    elif active_tab in {"Counter Plan", "Self-scout: predictable habits"}:
+        map_options = maps
+        map_widget_key = f"counter_map_widget_{team_id}"
+        persistent_map_key = f"counter_map_selection_{team_id}"
     else:
         map_options = maps
         map_widget_key = f"utility_map_widget_{team_id}"
@@ -737,7 +861,9 @@ def main():
         "Map", map_options, key=map_widget_key,
         on_change=_persist_filter_value, args=(map_widget_key, persistent_map_key),
     )
-    selected_side = st.sidebar.selectbox("Side", ("attack", "defense"), index=1, key="shared_side")
+    if "shared_side" not in st.session_state:
+        st.session_state["shared_side"] = "defense"
+    selected_side = st.sidebar.selectbox("Side", ("attack", "defense"), key="shared_side")
     side = "attacker" if selected_side == "attack" else "defender"
     shapes = load_shapes(casts, kills)
     plants = tables["plants"]
@@ -751,8 +877,8 @@ def main():
             unsafe_allow_html=True,
         )
     st.caption("VALORANT opponent scouting from local GRID-derived Parquet caches")
-    utility_tab, operator_tab = st.tabs(
-        ["Utility Map", "Operator Profiler"], key="scout_tabs", on_change="rerun",
+    utility_tab, operator_tab, counter_tab = st.tabs(
+        ["Utility Map", "Operator Profiler", counter_tab_label], key="scout_tabs", on_change="rerun",
     )
     with utility_tab:
         if utility_tab.open:
@@ -763,6 +889,11 @@ def main():
         if operator_tab.open:
             _render_operator_tab(
                 tables, selected_team["team_name"], team_id, map_name, selected_side, shapes, site_centres,
+            )
+    with counter_tab:
+        if counter_tab.open:
+            _render_counter_plan_tab(
+                tables, selected_team["team_name"], team_id, map_name, selected_side, side, site_centres,
             )
 
 

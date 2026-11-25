@@ -11,6 +11,7 @@ from app import (
     _most_common_category,
     _operator_headline,
     _operator_strip_figure,
+    _navigate_counter_card,
     _padded_axis_range,
     _sentinel_summary,
     _separate_zone_markers,
@@ -80,31 +81,64 @@ class UtilityMapAppTests(unittest.TestCase):
     def test_operator_strip_labels_games_and_leaves_a_gap(self):
         rounds = pd.DataFrame([
             {"series_id": "s1", "game_id": "g1", "game_number": "1", "opponent_name": "NRG",
-             "round_number": number, "holders": ("p1",), "holder_names": ("OXY",), "snapshot_available": True}
+             "map": "Lotus", "round_start_time": "2026-03-10T12:00:00Z", "round_number": number,
+             "holders": ("p1",), "holder_names": ("OXY",), "snapshot_available": True}
             for number in (1, 2)
         ] + [{
             "series_id": "s1", "game_id": "g2", "game_number": "2", "opponent_name": "FURIA",
+            "map": "Ascent", "round_start_time": "2026-04-12T12:00:00Z",
             "round_number": 1, "holders": ("p1",), "holder_names": ("OXY",), "snapshot_available": True,
         }])
         players = pd.DataFrame([{"player_id": "p1", "player_name": "OXY"}])
 
         figure = _operator_strip_figure(rounds, players)
 
-        self.assertEqual(list(figure.layout.yaxis.ticktext), ["vs NRG · G1", "vs FURIA · G2"])
+        self.assertEqual(list(figure.layout.yaxis.ticktext), [
+            "2026-04-12 · vs FURIA · Ascent · G2",
+            "2026-03-10 · vs NRG · Lotus · G1",
+        ])
         marker = figure.data[0]
         self.assertEqual(len(set(marker.y)), 2)
         self.assertGreater(abs(marker.y[-1] - marker.y[1]), 1)
 
-    def test_operator_headline_softens_small_samples_and_uses_esports_possessive(self):
+    def test_operator_strip_limits_to_latest_fifteen_unless_expanded(self):
+        rounds = pd.DataFrame([
+            {
+                "series_id": f"s{index}", "game_id": f"g{index}", "game_number": "1",
+                "opponent_name": f"Team {index}", "map": "Lotus",
+                "round_start_time": f"2026-04-{index + 1:02d}T12:00:00Z", "round_number": 1,
+                "holders": ("p1",), "holder_names": ("OXY",), "snapshot_available": True,
+            }
+            for index in range(17)
+        ])
+        players = pd.DataFrame([{"player_id": "p1", "player_name": "OXY"}])
+
+        latest = _operator_strip_figure(rounds, players)
+        all_games = _operator_strip_figure(rounds, players, show_all=True)
+
+        self.assertEqual(len(latest.layout.yaxis.ticktext), 15)
+        self.assertTrue(str(latest.layout.yaxis.ticktext[0]).startswith("2026-04-17"))
+        self.assertEqual(len(latest.data[0].x), 15)
+        self.assertEqual(len(all_games.layout.yaxis.ticktext), 17)
+
+    def test_operator_headline_uses_player_share_and_side_buy_evidence(self):
         small = pd.DataFrame({"seconds_into_round": [5, 25, 45, 50], "site_label": ["B site"] * 4,
                               "aggressiveness": ["aggressive"] * 4})
         headline = _operator_headline(
-            "G2 Esports", {"player_name": "OXY", "rounds": 4}, 289, small, "Lotus", "defense",
+            "G2 Esports", {"player_name": "OXY", "rounds": 93, "share": 96.875},
+            289, small, "Lotus", "defense", operator_rounds=96,
+            side_buy_rates={
+                "defender": {"held_rounds": 20, "observed_rounds": 100, "rate": 20},
+                "attacker": {"held_rounds": 1, "observed_rounds": 100, "rate": 1},
+            },
         )
 
         self.assertIn("G2 Esports'", headline)
-        self.assertIn("4 of 289 Lotus defense rounds", headline)
-        self.assertIn("too few engagements to profile angles", headline)
+        self.assertIn("OXY holds G2 Esports' Operator in 97%", headline)
+        self.assertIn("(93/96)", headline)
+        self.assertIn("20% (20/100) of defense rounds", headline)
+        self.assertIn("1% (1/100) on attack", headline)
+        self.assertIn("Too few player engagements to profile angles", headline)
         self.assertIn("try All maps", headline)
         self.assertNotIn("0–20 s", headline)
 
@@ -114,10 +148,24 @@ class UtilityMapAppTests(unittest.TestCase):
             "aggressiveness": ["aggressive"] * 10,
         })
         profiled = _operator_headline(
-            "Cloud9", {"player_name": "OXY", "rounds": 20}, 100, enough, "Lotus", "defense",
+            "Cloud9", {"player_name": "OXY", "rounds": 20, "share": 100},
+            100, enough, "Lotus", "defense", operator_rounds=20,
         )
         self.assertIn("Cloud9's", profiled)
         self.assertIn("0–20 s", profiled)
+        self.assertIn("100% of OXY's defense Operator engagements", profiled)
+
+    def test_counter_card_navigation_preserves_matching_filters(self):
+        state = {}
+        with patch("app.st.session_state", state):
+            _navigate_counter_card("Utility Map", "Lotus", "defense", "team-a", "placeable", "cypher")
+
+        self.assertEqual(state["scout_tabs"], "Utility Map")
+        self.assertEqual(state["utility_map_widget_team-a"], "Lotus")
+        self.assertEqual(state["utility_map_selection_team-a"], "Lotus")
+        self.assertEqual(state["shared_side"], "defense")
+        self.assertEqual(state["ability_category"], "placeable")
+        self.assertEqual(state["utility_agent_widget_team-a"], "cypher")
 
 
 if __name__ == "__main__":
