@@ -8,6 +8,12 @@ import pandas as pd
 ROUND_KEYS = ["series_id", "game_id", "round_number"]
 
 
+def _map_mask(frame, map_name):
+    if str(map_name).casefold() == "all maps":
+        return pd.Series(True, index=frame.index)
+    return frame["map"].astype(str).str.casefold().eq(str(map_name).casefold())
+
+
 def _round_key_columns(frame):
     result = frame.copy()
     for column in ROUND_KEYS:
@@ -32,7 +38,7 @@ def _rate_summary(eligible_rounds, observed_rounds, held_rounds):
     }
 
 
-def calculate_buy_rates(rounds, buys, team_id, map_name):
+def calculate_buy_rates(rounds, buys, team_id, map_name, side=None):
     """Calculate Operator rates from rounds with a recorded freeze-time snapshot.
 
     Returns the full round coverage as well as observed-snapshot denominators, so
@@ -40,11 +46,15 @@ def calculate_buy_rates(rounds, buys, team_id, map_name):
     """
     selected_rounds = rounds[
         rounds["team_id"].astype(str).eq(str(team_id))
-        & rounds["map"].astype(str).str.casefold().eq(str(map_name).casefold())
+        & _map_mask(rounds, map_name)
     ].drop_duplicates(ROUND_KEYS + ["side"]).copy()
+    if side is not None:
+        selected_rounds = selected_rounds[
+            selected_rounds["side"].astype(str).str.casefold().eq(str(side).casefold())
+        ]
     if selected_rounds.empty:
         empty_rounds = pd.DataFrame(columns=ROUND_KEYS + ["side", "holders", "holder_names", "snapshot_available"])
-        empty_shares = pd.DataFrame(columns=["player_id", "player_name", "rounds", "share"])
+        empty_shares = pd.DataFrame(columns=["player_id", "player_name", "agents", "rounds", "share"])
         return {
             "overall": _rate_summary(0, 0, 0), "by_side": {}, "rounds": empty_rounds,
             "strip_rounds": empty_rounds, "players": empty_shares,
@@ -53,8 +63,12 @@ def calculate_buy_rates(rounds, buys, team_id, map_name):
 
     selected_buys = buys[
         buys["team_id"].astype(str).eq(str(team_id))
-        & buys["map"].astype(str).str.casefold().eq(str(map_name).casefold())
+        & _map_mask(buys, map_name)
     ].copy()
+    if side is not None:
+        selected_buys = selected_buys[
+            selected_buys["side"].astype(str).str.casefold().eq(str(side).casefold())
+        ]
     selected_rounds = _round_key_columns(selected_rounds)
     selected_buys = _round_key_columns(selected_buys)
     observed_keys = selected_buys[ROUND_KEYS].drop_duplicates()
@@ -94,7 +108,7 @@ def calculate_buy_rates(rounds, buys, team_id, map_name):
         )
 
     if holders.empty:
-        player_rows = pd.DataFrame(columns=["player_id", "player_name", "rounds"])
+        player_rows = pd.DataFrame(columns=["player_id", "player_name", "agents", "rounds"])
         agent_rows = pd.DataFrame(columns=["agent", "rounds"])
     else:
         player_rows = holders.groupby("player_id", dropna=False).apply(
@@ -103,6 +117,8 @@ def calculate_buy_rates(rounds, buys, team_id, map_name):
                     group["player_name"].dropna().astype(str).value_counts().index[0]
                     if group["player_name"].notna().any() else "Unknown player"
                 ),
+                "agents": ", ".join(sorted(group["agent"].dropna().astype(str).unique(), key=str.casefold))
+                if group["agent"].notna().any() else "Unknown",
                 "rounds": group[ROUND_KEYS].drop_duplicates().shape[0],
             }),
             include_groups=False,
@@ -202,7 +218,7 @@ def aggressiveness_label(score):
 def _event_rows(kills, damage, buys, team_id, map_name, side="defender"):
     possession = buys[
         buys["team_id"].astype(str).eq(str(team_id))
-        & buys["map"].astype(str).str.casefold().eq(str(map_name).casefold())
+        & _map_mask(buys, map_name)
         & buys["has_operator"].fillna(False).astype(bool)
     ].copy()
     possession = _round_key_columns(possession)
@@ -218,7 +234,7 @@ def _event_rows(kills, damage, buys, team_id, map_name, side="defender"):
             continue
         selected = frame[
             frame[team_column].astype(str).eq(str(team_id))
-            & frame["map"].astype(str).str.casefold().eq(str(map_name).casefold())
+            & _map_mask(frame, map_name)
             & frame["side" if kind == "damage" else "killer_side"].astype(str).str.casefold().eq(str(side).casefold())
             & frame["weapon"].astype(str).str.casefold().eq("operator")
         ]
@@ -239,6 +255,7 @@ def _event_rows(kills, damage, buys, team_id, map_name, side="defender"):
                 "agent": row.get(agent_column),
                 "victim_id": row.get("victim_id"),
                 "seconds_into_round": row.get("seconds_into_round"),
+                "event_time": row.get("event_time"),
                 "x": row.get(x_column),
                 "y": row.get(y_column),
                 "event_type": kind,

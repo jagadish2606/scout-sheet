@@ -53,6 +53,8 @@ def _round_started(game):
 def _meta_game(series_id, game_id, session="1", valid="True", map_name="ascent"):
     return {
         "title": "val", "series_id": series_id, "game_id": game_id, "map": map_name,
+        "game_number": "1", "team1_id": "team-a", "team1_name": "Alpha",
+        "team2_id": "team-b", "team2_name": "Bravo",
         "session": session, "session_valid": valid,
     }
 
@@ -98,7 +100,17 @@ class ExtractSeriesTests(unittest.TestCase):
     def _write_games(self, rows):
         path = self.root / "meta" / "games.csv"
         with path.open("w", newline="", encoding="utf-8") as file:
-            writer = csv.DictWriter(file, fieldnames=["title", "series_id", "game_id", "map", "session", "session_valid"])
+            writer = csv.DictWriter(file, fieldnames=[
+                "title", "series_id", "game_id", "game_number", "map", "team1_id",
+                "team1_name", "team2_id", "team2_name", "session", "session_valid",
+            ])
+            writer.writeheader()
+            writer.writerows(rows)
+
+    def _write_players(self, rows):
+        path = self.root / "meta" / "players.csv"
+        with path.open("w", newline="", encoding="utf-8") as file:
+            writer = csv.DictWriter(file, fieldnames=["title", "player_id", "name"])
             writer.writeheader()
             writer.writerows(rows)
 
@@ -111,6 +123,8 @@ class ExtractSeriesTests(unittest.TestCase):
         ])
         start = "2025-01-01T00:00:00Z"
         game1 = _game("game-1", 1, start, "defender", "ascent")
+        game1["teams"][0]["players"][0].pop("name")
+        self._write_players([{"title": "val", "player_id": "game-1-p1", "name": "Indexed Player"}])
         game2 = _game("game-2", 1, "2025-01-01T00:10:00Z", "attacker", "lotus")
         rolled_game = _game("rolled-game", 1, "2025-01-01T00:20:00Z", "defender", "bind")
         unknown_rolled_game = _game("unknown-rolled-game", 1, "2025-01-01T00:05:00Z", "defender", "bind")
@@ -246,6 +260,10 @@ class ExtractSeriesTests(unittest.TestCase):
         self.assertEqual(rounds[rounds["game_id"] == "game-1"]["round_number"].tolist(), [1, 1])
         self.assertEqual(rounds[rounds["game_id"] == "game-1"]["side"].tolist(), ["defender", "attacker"])
         self.assertEqual(rounds[rounds["game_id"] == "game-1"]["won_round"].tolist(), [False, True])
+        alpha_round = rounds[(rounds["game_id"] == "game-1") & (rounds["team_id"] == "team-a")].iloc[0]
+        self.assertEqual(alpha_round["round_live_time"], "2025-01-01T00:00:20Z")
+        self.assertEqual(alpha_round["game_number"], "1")
+        self.assertEqual(alpha_round["opponent_name"], "Bravo")
 
         casts = tables["casts"]
         self.assertEqual(len(casts), 3)
@@ -258,6 +276,7 @@ class ExtractSeriesTests(unittest.TestCase):
         kill = tables["kills"].iloc[0]
         self.assertEqual(kill["weapon"], "operator")
         self.assertEqual(kill["seconds_into_round"], -8.0)
+        self.assertEqual(kill["event_time"], "2025-01-01T00:00:12Z")
         self.assertEqual((kill["killer_x"], kill["killer_y"], kill["victim_x"], kill["victim_y"]), (100, 200, 300, 400))
         plant = tables["plants"].iloc[0]
         self.assertEqual((plant["x"], plant["y"], plant["team_id"]), (700, 800, "team-a"))
@@ -266,12 +285,14 @@ class ExtractSeriesTests(unittest.TestCase):
         self.assertEqual(damage["damage_amount"], 150)
         self.assertEqual((damage["x"], damage["y"], damage["victim_x"], damage["victim_y"]), (110, 220, 310, 420))
         self.assertEqual(damage["seconds_into_round"], -6.0)
+        self.assertEqual(damage["event_time"], "2025-01-01T00:00:14Z")
         spawn = tables["spawn_positions"]
         self.assertEqual(len(spawn), 2)
         self.assertEqual(set(spawn["side"]), {"attacker", "defender"})
         buy = tables["buys"].iloc[0]
         self.assertEqual(buy["primary_weapon"], "operator")
         self.assertTrue(buy["has_operator"])
+        self.assertEqual(buy["player_name"], "Indexed Player")
 
 
 class SeriesSelectionTests(unittest.TestCase):

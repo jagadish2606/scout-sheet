@@ -110,6 +110,34 @@ class OperatorAnalysisTests(unittest.TestCase):
         self.assertTrue(rates["players"].empty)
         self.assertTrue(rates["agents"].empty)
 
+    def test_all_maps_and_side_filter_keep_rounds_and_player_agents_separate(self):
+        rounds = pd.concat([
+            self.rounds,
+            pd.DataFrame([{
+                "series_id": "s1", "game_id": "g3", "round_number": 1,
+                "team_id": "c9", "map": "Ascent", "side": "defender",
+            }]),
+        ], ignore_index=True)
+        buys = pd.concat([
+            self.buys,
+            pd.DataFrame([{
+                "series_id": "s1", "game_id": "g3", "round_number": 1,
+                "team_id": "c9", "map": "Ascent", "side": "defender",
+                "player_id": "p1", "player_name": "OXY", "agent": "jett", "has_operator": True,
+            }]),
+        ], ignore_index=True)
+
+        all_maps = calculate_buy_rates(rounds, buys, "c9", "All maps")
+        defense = calculate_buy_rates(rounds, buys, "c9", "All maps", side="defender")
+
+        self.assertEqual(all_maps["overall"]["eligible_rounds"], 6)
+        self.assertEqual(all_maps["overall"]["held_rounds"], 4)
+        self.assertEqual(defense["overall"]["eligible_rounds"], 4)
+        self.assertEqual(defense["overall"]["held_rounds"], 3)
+        oxy = all_maps["players"].set_index("player_name").loc["OXY"]
+        self.assertEqual(oxy["rounds"], 2)
+        self.assertEqual(oxy["agents"], "jett")
+
     def test_aggressiveness_score_thresholds_and_missing_spawns(self):
         defender_spawn = (0, 0)
         attacker_spawn = (10, 0)
@@ -139,18 +167,19 @@ class OperatorAnalysisTests(unittest.TestCase):
             {"series_id": "s1", "game_id": "g1", "round_number": 3, "team_id": "c9", "map": "Lotus", "has_operator": True, "player_id": "p1"},
         ])
         kills = pd.DataFrame([
-            {"series_id": "s1", "game_id": "g1", "round_number": 3, "map": "Lotus", "killer_team_id": "c9", "killer_id": "p1", "killer_name": "OXY", "killer_side": "defender", "killer_agent": "jett", "victim_id": "enemy", "weapon": "operator", "seconds_into_round": 10, "killer_x": 20, "killer_y": 30},
+            {"series_id": "s1", "game_id": "g1", "round_number": 3, "map": "Lotus", "killer_team_id": "c9", "killer_id": "p1", "killer_name": "OXY", "killer_side": "defender", "killer_agent": "jett", "victim_id": "enemy", "weapon": "operator", "seconds_into_round": 10, "event_time": "2025-01-01T00:00:10Z", "killer_x": 20, "killer_y": 30},
         ])
         damage = pd.DataFrame([
-            {"series_id": "s1", "game_id": "g1", "round_number": 3, "map": "Lotus", "team_id": "c9", "player_id": "p1", "player_name": "OXY", "side": "defender", "agent": "jett", "victim_id": "enemy", "weapon": "operator", "seconds_into_round": 9, "x": 18, "y": 28},
-            {"series_id": "s1", "game_id": "g1", "round_number": 3, "map": "Lotus", "team_id": "c9", "player_id": "p1", "player_name": "OXY", "side": "defender", "agent": "jett", "victim_id": "enemy", "weapon": "operator", "seconds_into_round": 9.5, "x": 19, "y": 29},
+            {"series_id": "s1", "game_id": "g1", "round_number": 3, "map": "Lotus", "team_id": "c9", "player_id": "p1", "player_name": "OXY", "side": "defender", "agent": "jett", "victim_id": "enemy", "weapon": "operator", "seconds_into_round": 9, "event_time": "2025-01-01T00:00:09Z", "x": 18, "y": 28},
+            {"series_id": "s1", "game_id": "g1", "round_number": 3, "map": "Lotus", "team_id": "c9", "player_id": "p1", "player_name": "OXY", "side": "defender", "agent": "jett", "victim_id": "enemy", "weapon": "operator", "seconds_into_round": 9.5, "event_time": "2025-01-01T00:00:09.500Z", "x": 19, "y": 29},
         ])
 
-        engagements = operator_engagements(kills, damage, buys, "c9", "Lotus")
+        engagements = operator_engagements(kills, damage, buys, "c9", "All maps")
 
         self.assertEqual(len(engagements), 1)
         self.assertEqual(engagements.iloc[0]["event_type"], "kill")
         self.assertEqual(engagements.iloc[0]["source_events"], 3)
+        self.assertEqual(engagements.iloc[0]["event_time"], "2025-01-01T00:00:10Z")
 
 
 if __name__ == "__main__":

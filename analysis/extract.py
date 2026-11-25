@@ -11,8 +11,8 @@ from config import DATA_DIR, read_jsonl_zst
 
 TABLE_COLUMNS = {
     "rounds": [
-        "series_id", "game_id", "map", "round_number", "round_start_time",
-        "team_id", "team_name", "side", "won_round",
+        "series_id", "game_id", "game_number", "map", "round_number", "round_start_time",
+        "round_live_time", "team_id", "team_name", "opponent_name", "side", "won_round",
     ],
     "casts": [
         "series_id", "game_id", "map", "round_number", "seconds_into_round",
@@ -20,13 +20,13 @@ TABLE_COLUMNS = {
         "ability", "slot", "x", "y", "z", "view_x", "view_y", "view_z", "quality",
     ],
     "kills": [
-        "series_id", "game_id", "map", "round_number", "seconds_into_round",
+        "series_id", "game_id", "map", "round_number", "seconds_into_round", "event_time",
         "killer_id", "killer_name", "killer_team_id", "killer_team_name", "killer_side",
         "killer_agent", "victim_id", "victim_name", "victim_team_id", "victim_team_name",
         "victim_side", "victim_agent", "weapon", "killer_x", "killer_y", "victim_x", "victim_y",
     ],
     "damage": [
-        "series_id", "game_id", "map", "round_number", "seconds_into_round",
+        "series_id", "game_id", "map", "round_number", "seconds_into_round", "event_time",
         "player_id", "player_name", "team_id", "team_name", "side", "agent",
         "victim_id", "victim_name", "victim_team_id", "victim_team_name", "victim_side",
         "weapon", "damage_amount", "x", "y", "victim_x", "victim_y",
@@ -68,6 +68,11 @@ def _load_game_metadata(series_id, data_dir):
             sessions[session].append(valid)
             games[str(row["game_id"])] = {
                 "map": row.get("map") or None,
+                "game_number": row.get("game_number") or None,
+                "team1_id": row.get("team1_id") or None,
+                "team1_name": row.get("team1_name") or None,
+                "team2_id": row.get("team2_id") or None,
+                "team2_name": row.get("team2_name") or None,
                 "session": session,
                 "valid": valid,
             }
@@ -75,6 +80,38 @@ def _load_game_metadata(series_id, data_dir):
         session for session, values in sessions.items() if values and all(values)
     }
     return games, valid_sessions
+
+
+def _load_player_names(data_dir):
+    path = Path(data_dir) / "meta" / "players.csv"
+    if not path.is_file():
+        return {}
+    names = {}
+    with path.open(newline="", encoding="utf-8") as file:
+        for row in csv.DictReader(file):
+            player_id, name = row.get("player_id"), row.get("name")
+            if row.get("title") == "val" and player_id and name and name.strip():
+                names[str(player_id)] = name.strip()
+    return names
+
+
+def _is_placeholder_player_name(value):
+    if value is None or pd.isna(value):
+        return True
+    name = str(value).strip()
+    return not name or bool(re.fullmatch(r"player\s+\d+", name, re.IGNORECASE))
+
+
+def _fill_player_names(frame, player_names, id_column, name_column):
+    if frame.empty or id_column not in frame or name_column not in frame:
+        return
+    for index, row in frame.iterrows():
+        current_name = row[name_column]
+        if not _is_placeholder_player_name(current_name):
+            continue
+        indexed_name = player_names.get(str(row[id_column]))
+        if indexed_name and not _is_placeholder_player_name(indexed_name):
+            frame.at[index, name_column] = indexed_name
 
 
 def _round_number(value):
@@ -351,6 +388,7 @@ def extract_series(series_id, data_dir=DATA_DIR):
     series_id = str(series_id)
     data_dir = Path(data_dir)
     game_metadata, valid_sessions = _load_game_metadata(series_id, data_dir)
+    player_names = _load_player_names(data_dir)
     valid_game_ids = {game_id for game_id, info in game_metadata.items() if info["valid"]}
     if not valid_game_ids:
         return {name: pd.DataFrame(columns=columns) for name, columns in TABLE_COLUMNS.items()}
@@ -450,15 +488,29 @@ def extract_series(series_id, data_dir=DATA_DIR):
                         team_id = str(team_id)
                         team_info = context["teams"].setdefault(team_id, {})
                         team_info.update({k: team[k] for k in ("name", "side") if team.get(k) is not None})
+                        opponent_name = next(
+                            (other.get("name") for other in game_state.get("teams", []) or []
+                             if str(other.get("id")) != team_id and other.get("name")),
+                            None,
+                        )
+                        metadata = game_metadata.get(game_id, {})
+                        if opponent_name is None:
+                            if str(metadata.get("team1_id")) == team_id:
+                                opponent_name = metadata.get("team2_name")
+                            elif str(metadata.get("team2_id")) == team_id:
+                                opponent_name = metadata.get("team1_name")
                         row_key = (game_id, round_number, team_id)
                         row = {
                             "series_id": series_id,
                             "game_id": game_id,
+                            "game_number": metadata.get("game_number"),
                             "map": _game_map(game_context, game_id, game_metadata),
                             "round_number": round_number,
                             "round_start_time": started_at,
+                            "round_live_time": None,
                             "team_id": team_id,
                             "team_name": team_info.get("name"),
+                            "opponent_name": opponent_name,
                             "side": team_info.get("side"),
                             "won_round": None,
                         }
@@ -486,6 +538,8 @@ def extract_series(series_id, data_dir=DATA_DIR):
             if event_type == "round-ended-freezetime":
                 if round_number is not None and occurred_at is not None:
                     round_live_at[(game_id, round_number)] = occurred_at
+                    for index in round_indices.get((game_id, round_number), []):
+                        rows["rounds"][index]["round_live_time"] = occurred_at
                 if not event.get("includesFullState"):
                     continue
                 for game in state.get("games", []) or []:
@@ -598,7 +652,7 @@ def extract_series(series_id, data_dir=DATA_DIR):
                     "game_id": game_id,
                     "map": _game_map(game_context, game_id, game_metadata),
                     "round_number": round_number,
-                    "_occurred_at": occurred_at,
+                    "event_time": occurred_at,
                     "killer_id": killer_id,
                     "killer_name": killer.get("player_name"),
                     "killer_team_id": killer.get("team_id"),
@@ -633,7 +687,7 @@ def extract_series(series_id, data_dir=DATA_DIR):
                         "game_id": game_id,
                         "map": _game_map(game_context, game_id, game_metadata),
                         "round_number": round_number,
-                        "_occurred_at": occurred_at,
+                        "event_time": occurred_at,
                         "player_id": player_id,
                         "player_name": player.get("player_name"),
                         "team_id": player.get("team_id"),
@@ -657,7 +711,7 @@ def extract_series(series_id, data_dir=DATA_DIR):
         for row in rows[table_name]:
             row["seconds_into_round"] = _elapsed_seconds(
                 round_live_at.get((str(row["game_id"]), row["round_number"])),
-                row.pop("_occurred_at", None),
+                row.get("event_time") if table_name != "casts" else row.pop("_occurred_at", None),
             )
 
     result = {}
@@ -666,4 +720,14 @@ def extract_series(series_id, data_dir=DATA_DIR):
         if rolled_back_game_ids and not frame.empty:
             frame = frame[~frame["game_id"].isin(rolled_back_game_ids)].reset_index(drop=True)
         result[name] = frame
+    for table_name, id_column, name_column in (
+        ("casts", "player_id", "player_name"),
+        ("kills", "killer_id", "killer_name"),
+        ("kills", "victim_id", "victim_name"),
+        ("damage", "player_id", "player_name"),
+        ("damage", "victim_id", "victim_name"),
+        ("buys", "player_id", "player_name"),
+        ("spawn_positions", "player_id", "player_name"),
+    ):
+        _fill_player_names(result[table_name], player_names, id_column, name_column)
     return result

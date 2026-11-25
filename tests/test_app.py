@@ -9,6 +9,8 @@ from app import (
     _category_counts,
     _map_figure,
     _most_common_category,
+    _operator_headline,
+    _operator_strip_figure,
     _padded_axis_range,
     _sentinel_summary,
     _separate_zone_markers,
@@ -74,6 +76,48 @@ class UtilityMapAppTests(unittest.TestCase):
         )
         self.assertEqual(_sentinel_summary(no_sentinel, "team-a", "Lotus"), "No sentinel played on this map.")
         self.assertEqual(_sentinel_summary(buys.iloc[:0], "team-a", "Lotus"), "Sentinel lineup data is unavailable for this map.")
+
+    def test_operator_strip_labels_games_and_leaves_a_gap(self):
+        rounds = pd.DataFrame([
+            {"series_id": "s1", "game_id": "g1", "game_number": "1", "opponent_name": "NRG",
+             "round_number": number, "holders": ("p1",), "holder_names": ("OXY",), "snapshot_available": True}
+            for number in (1, 2)
+        ] + [{
+            "series_id": "s1", "game_id": "g2", "game_number": "2", "opponent_name": "FURIA",
+            "round_number": 1, "holders": ("p1",), "holder_names": ("OXY",), "snapshot_available": True,
+        }])
+        players = pd.DataFrame([{"player_id": "p1", "player_name": "OXY"}])
+
+        figure = _operator_strip_figure(rounds, players)
+
+        self.assertEqual(list(figure.layout.yaxis.ticktext), ["vs NRG · G1", "vs FURIA · G2"])
+        marker = figure.data[0]
+        self.assertEqual(len(set(marker.y)), 2)
+        self.assertGreater(abs(marker.y[-1] - marker.y[1]), 1)
+
+    def test_operator_headline_softens_small_samples_and_uses_esports_possessive(self):
+        small = pd.DataFrame({"seconds_into_round": [5, 25, 45, 50], "site_label": ["B site"] * 4,
+                              "aggressiveness": ["aggressive"] * 4})
+        headline = _operator_headline(
+            "G2 Esports", {"player_name": "OXY", "rounds": 4}, 289, small, "Lotus", "defense",
+        )
+
+        self.assertIn("G2 Esports'", headline)
+        self.assertIn("4 of 289 Lotus defense rounds", headline)
+        self.assertIn("too few engagements to profile angles", headline)
+        self.assertIn("try All maps", headline)
+        self.assertNotIn("0–20 s", headline)
+
+        enough = pd.DataFrame({
+            "seconds_into_round": list(range(10)),
+            "site_label": ["B site"] * 10,
+            "aggressiveness": ["aggressive"] * 10,
+        })
+        profiled = _operator_headline(
+            "Cloud9", {"player_name": "OXY", "rounds": 20}, 100, enough, "Lotus", "defense",
+        )
+        self.assertIn("Cloud9's", profiled)
+        self.assertIn("0–20 s", profiled)
 
 
 if __name__ == "__main__":

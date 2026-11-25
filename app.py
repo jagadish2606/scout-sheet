@@ -116,6 +116,12 @@ def _set_ability_category(category, widget_key=None):
         st.session_state[widget_key] = category
 
 
+def _persist_filter_value(widget_key, persistent_key):
+    value = st.session_state.get(widget_key)
+    if value is not None:
+        st.session_state[persistent_key] = value
+
+
 def _sentinel_summary(buys, team_id, map_name):
     selected = buys[
         buys["team_id"].astype(str).eq(str(team_id))
@@ -222,7 +228,10 @@ def _map_figure(shape, casts, zones, show_dots, map_name, site_centres):
 def _operator_strip_figure(rounds, player_shares):
     ordered = rounds.copy()
     ordered["_round_order"] = pd.to_numeric(ordered["round_number"], errors="coerce")
-    ordered = ordered.sort_values(["series_id", "game_id", "_round_order"], kind="stable").reset_index(drop=True)
+    ordered["_game_order"] = pd.to_numeric(ordered.get("game_number"), errors="coerce")
+    ordered = ordered.sort_values(
+        ["series_id", "_game_order", "game_id", "_round_order"], kind="stable",
+    ).reset_index(drop=True)
     palette = ["#38bdf8", "#f97316", "#a78bfa", "#34d399", "#f472b6", "#facc15", "#fb7185"]
     player_info = {}
     for row in player_shares.drop_duplicates("player_id").itertuples(index=False):
@@ -231,21 +240,42 @@ def _operator_strip_figure(rounds, player_shares):
             "color": palette[len(player_info) % len(palette)],
         }
     points = {"No Operator": [], "Snapshot unavailable": [], "Multiple holders": []}
-    for index, row in enumerate(ordered.itertuples(index=False)):
+    game_labels = []
+    game_ticks = []
+    row_positions = {}
+    game_groups = list(ordered.groupby(["series_id", "game_id"], sort=False))
+    for game_index, ((_, _), game) in enumerate(game_groups):
+        game_row = game.iloc[0]
+        game_number = game_row.get("game_number")
+        game_number = str(game_number) if pd.notna(game_number) and str(game_number).strip() else str(game_index + 1)
+        opponent = game_row.get("opponent_name")
+        opponent = str(opponent) if pd.notna(opponent) and str(opponent).strip() else "Unknown opponent"
+        game_labels.append(f"vs {opponent} · G{game_number}")
+        game_ticks.append(float(game_index) * 1.3)
+        for row in game.itertuples(index=False):
+            row_positions[(str(row.series_id), str(row.game_id), str(row.round_number))] = float(game_index) * 1.3
+
+    for row in ordered.itertuples(index=False):
         holders = tuple(row.holders)
         names = tuple(row.holder_names)
-        holder_label = ", ".join(names) if names else (", ".join(holders) if holders else "No Operator recorded")
-        hover = f"{row.series_id} · {row.game_id} · Round {row.round_number}<br>{holder_label}"
+        holder_label = ", ".join(names) if names else ("No Operator recorded" if not holders else "Holder name unavailable")
+        game_label = game_labels[next(
+            index for index, ((series_id, game_id), _) in enumerate(game_groups)
+            if str(series_id) == str(row.series_id) and str(game_id) == str(row.game_id)
+        )]
+        x = float(row.round_number) if pd.notna(row.round_number) else 0.0
+        y = row_positions[(str(row.series_id), str(row.game_id), str(row.round_number))]
+        hover = f"{game_label} · Round {row.round_number}<br>{holder_label}"
         if not row.snapshot_available:
-            points["Snapshot unavailable"].append((index, hover))
+            points["Snapshot unavailable"].append((x, y, hover))
         elif not holders:
-            points["No Operator"].append((index, hover))
+            points["No Operator"].append((x, y, hover))
         elif len(holders) > 1:
-            points["Multiple holders"].append((index, hover))
+            points["Multiple holders"].append((x, y, hover))
         else:
             player_id = str(holders[0])
-            player_info.setdefault(player_id, {"name": names[0] if names else player_id, "color": "#f59e0b"})
-            points.setdefault(player_id, []).append((index, hover))
+            player_info.setdefault(player_id, {"name": names[0] if names else "Unknown player", "color": "#f59e0b"})
+            points.setdefault(player_id, []).append((x, y, hover))
 
     figure = go.Figure()
     for player_id, selections in points.items():
@@ -260,18 +290,74 @@ def _operator_strip_figure(rounds, player_shares):
         else:
             label, color = player_info[player_id]["name"], player_info[player_id]["color"]
         figure.add_trace(go.Scatter(
-            x=[index for index, _ in selections], y=[0] * len(selections), mode="markers",
+            x=[x for x, _, _ in selections], y=[y for _, y, _ in selections], mode="markers",
             marker={"symbol": "square", "size": 18, "color": color, "line": {"color": "#111827", "width": 1}},
-            text=[hover for _, hover in selections], hovertemplate="%{text}<extra></extra>", name=label,
+            text=[hover for _, _, hover in selections], hovertemplate="%{text}<extra></extra>", name=label,
         ))
+    max_round = int(ordered["_round_order"].max()) if not ordered.empty and ordered["_round_order"].notna().any() else 1
+    chart_height = max(180, 38 * len(game_labels) + 70)
     figure.update_layout(
-        template="plotly_dark", height=150, margin={"l": 8, "r": 8, "t": 8, "b": 24},
+        template="plotly_dark", height=chart_height, margin={"l": 8, "r": 8, "t": 8, "b": 24},
         plot_bgcolor="#111827", paper_bgcolor="#111827", showlegend=True,
         legend={"orientation": "h", "y": 1.15, "x": 0},
-        xaxis={"title": "Rounds · hover a cell for game and round", "showgrid": False, "zeroline": False, "showticklabels": False},
-        yaxis={"visible": False, "range": [-1, 1]},
+        xaxis={"title": "Round number", "range": [0.5, max_round + 0.5], "dtick": 1,
+               "showgrid": False, "zeroline": False},
+        yaxis={"tickmode": "array", "tickvals": game_ticks, "ticktext": game_labels,
+               "range": [-0.5, max(0.5, len(game_labels) * 1.3 - 0.8)],
+               "showgrid": False, "zeroline": False},
     )
     return figure
+
+
+def _team_possessive(team_name):
+    return f"{team_name}'" if str(team_name).rstrip().casefold().endswith("s") else f"{team_name}'s"
+
+
+def _operator_headline(team_name, primary, total_rounds, engagements, map_name, selected_side):
+    if primary is None:
+        return None
+    player_name = primary["player_name"]
+    held_rounds = int(primary["rounds"])
+    possessive = _team_possessive(team_name)
+    if selected_side != "defense":
+        scope = "attack rounds across all maps" if map_name == "All maps" else f"{map_name.title()} attack rounds"
+        return f"{possessive} primary Operator player {player_name} held it in {held_rounds} of {total_rounds} {scope}; the angle profile below uses defense engagements."
+    if len(engagements) < 10:
+        suggestion = "; try All maps" if map_name != "All maps" else ""
+        scope = "defense rounds across all maps" if map_name == "All maps" else f"{map_name.title()} defense rounds"
+        return (
+            f"{possessive} primary Operator player {player_name} held it in {held_rounds} of {total_rounds} "
+            f"{scope} — too few engagements to profile angles here{suggestion}."
+        )
+
+    seconds = pd.to_numeric(engagements["seconds_into_round"], errors="coerce")
+    timed = engagements[seconds.notna()]
+    early = timed[pd.to_numeric(timed["seconds_into_round"], errors="coerce").between(0, 20, inclusive="left")]
+    if map_name == "All maps":
+        if timed.empty:
+            return f"{possessive} primary Operator player {player_name} has {len(engagements)} defense engagements across all maps; event timing is unavailable."
+        return (
+            f"{possessive} primary Operator player {player_name} has {100 * len(early) / len(timed):.0f}% of "
+            f"their defense Operator engagements in 0–20 s ({len(early)}/{len(timed)}) across all maps."
+        )
+
+    known = engagements[~engagements["aggressiveness"].eq("unknown")]
+    known_counts = known["aggressiveness"].value_counts()
+    if not known.empty and known_counts.iloc[0] / len(known) >= 0.5:
+        angle_style = {
+            "aggressive": "holds aggressive angles",
+            "passive": "holds passive angles",
+            "standard": "takes standard angles",
+        }.get(known_counts.index[0], "engages")
+    else:
+        angle_style = "engages"
+    site = _most_common(engagements["site_label"]) or "an unknown area"
+    timing = (
+        f"{100 * len(early) / len(timed):.0f}% of their Op engagements happen 0–20 s into the round "
+        f"({len(early)}/{len(timed)})"
+        if not timed.empty else "engagement timing is unavailable"
+    )
+    return f"{possessive} primary Operator player {player_name} {angle_style} at {site} — {timing} on {map_name.title()}."
 
 
 def _operator_map_figure(shape, engagements, map_name, site_centres):
@@ -316,21 +402,23 @@ def _profile_engagements(kills, damage, buys, spawn_positions, team_id, map_name
     engagements = operator_engagements(kills, damage, buys, team_id, map_name, "defender")
     if engagements.empty:
         return engagements, pd.DataFrame(columns=["player_name", "engagements", "aggressive", "standard", "passive", "unknown", "aggressive_share"])
-    anchors = estimate_spawn_anchors(spawn_positions).get(str(map_name).casefold(), {})
-    defender_spawn = anchors.get("defender")
-    attacker_spawn = anchors.get("attacker")
+    anchors = estimate_spawn_anchors(spawn_positions)
     engagements["seconds_into_round"] = pd.to_numeric(engagements["seconds_into_round"], errors="coerce")
     engagements["time_bucket"] = engagements["seconds_into_round"].map(_time_bucket)
-    engagements["aggression_score"] = [
-        aggressiveness_score((row.x, row.y), defender_spawn, attacker_spawn)
-        if defender_spawn is not None and attacker_spawn is not None else None
-        for row in engagements.itertuples(index=False)
-    ]
+    aggression_scores = []
+    site_labels = []
+    for row in engagements.itertuples(index=False):
+        map_anchors = anchors.get(str(row.map).casefold(), {})
+        defender_spawn = map_anchors.get("defender")
+        attacker_spawn = map_anchors.get("attacker")
+        aggression_scores.append(
+            aggressiveness_score((row.x, row.y), defender_spawn, attacker_spawn)
+            if defender_spawn is not None and attacker_spawn is not None else None
+        )
+        site_labels.append(site_label(row.map, row.x, row.y, site_centres))
+    engagements["aggression_score"] = aggression_scores
     engagements["aggressiveness"] = engagements["aggression_score"].map(aggressiveness_label)
-    engagements["site_label"] = [
-        site_label(map_name, row.x, row.y, site_centres)
-        for row in engagements.itertuples(index=False)
-    ]
+    engagements["site_label"] = site_labels
     player_rows = []
     for player_id, group in engagements.groupby("player_id", dropna=False, sort=False):
         counts = group["aggressiveness"].value_counts()
@@ -496,26 +584,44 @@ def _render_utility_tab(tables, team_name, team_id, map_name, selected_side, sid
 def _render_operator_tab(tables, team_name, team_id, map_name, selected_side, shapes, site_centres):
     rounds, buys = tables["rounds"], tables["buys"]
     rates = calculate_buy_rates(rounds, buys, team_id, map_name)
+    selected_side_key = "attacker" if selected_side == "attack" else "defender"
+    selected_rates = calculate_buy_rates(rounds, buys, team_id, map_name, side=selected_side_key)
     overall = rates["overall"]
-    strip_rounds = rates["strip_rounds"][rates["strip_rounds"]["side"].astype(str).str.casefold().eq(
-        "attacker" if selected_side == "attack" else "defender",
-    )]
+    strip_rounds = selected_rates["strip_rounds"]
     handoff = calculate_handoff_rate(strip_rounds)
-    series_count = int(rounds[
-        rounds["team_id"].astype(str).eq(str(team_id))
-        & rounds["map"].astype(str).str.casefold().eq(map_name.casefold())
-    ]["series_id"].nunique())
+    map_mask = pd.Series(True, index=rounds.index) if map_name == "All maps" else rounds["map"].astype(str).str.casefold().eq(map_name.casefold())
+    series_count = int(rounds[rounds["team_id"].astype(str).eq(str(team_id)) & map_mask]["series_id"].nunique())
     eligible_count = overall["eligible_rounds"]
     observed_count = overall["observed_rounds"]
-    st.markdown(f"**{team_name} Operator profile · {map_name.title()}**")
+    selected_eligible_count = selected_rates["overall"]["eligible_rounds"]
+    display_map = map_name if map_name == "All maps" else map_name.title()
+    engagements, player_aggression = _profile_engagements(
+        tables["kills"], tables["damage"], buys, tables["spawn_positions"],
+        team_id, map_name, site_centres,
+    )
+    primary = selected_rates["players"].iloc[0].to_dict() if not selected_rates["players"].empty else None
+    primary_engagements = pd.DataFrame()
+    if primary is not None and selected_side == "defense" and not engagements.empty:
+        primary_engagements = engagements[engagements["player_id"].astype(str).eq(str(primary["player_id"]))]
+        if primary_engagements.empty:
+            primary_engagements = engagements[engagements["player_name"].eq(primary["player_name"])]
+    headline = _operator_headline(
+        team_name, primary, selected_rates["overall"]["observed_rounds"],
+        primary_engagements, map_name, selected_side,
+    )
+    st.markdown(f"**{team_name} Operator profile · {display_map}**")
+    if headline:
+        st.markdown(f"**{headline}**")
     metrics = st.columns(4)
-    metrics[0].metric("Map series", f"{series_count:,}")
+    metrics[0].metric("Series" if map_name == "All maps" else "Map series", f"{series_count:,}")
     metrics[1].metric("Team rounds", f"{eligible_count:,}")
     metrics[2].metric("Buy snapshots", f"{observed_count:,}")
     metrics[3].metric("Operator rounds", f"{overall['held_rounds']:,}")
     st.caption(f"Buy snapshot coverage: {observed_count:,} of {eligible_count:,} team rounds.")
     if observed_count < 20:
         st.warning(f"Small sample: only {observed_count} rounds have a recorded freeze-time buy snapshot.")
+    if selected_eligible_count < 20:
+        st.warning(f"Small sample: only {selected_eligible_count} team rounds are in the selected {selected_side} filter.")
 
     rate_columns = st.columns(3)
     for column, label, summary in (
@@ -528,78 +634,55 @@ def _render_operator_tab(tables, team_name, team_id, map_name, selected_side, sh
 
     st.subheader("Who buys the Operator")
     player_column, agent_column = st.columns(2)
-    player_shares = rates["players"].copy()
-    agent_shares = rates["agents"].copy()
-    if not player_shares.empty:
-        player_shares["share"] = player_shares["share"].map(lambda value: f"{value:.0f}%")
-    if not agent_shares.empty:
-        agent_shares["share"] = agent_shares["share"].map(lambda value: f"{value:.0f}%")
+    player_shares = selected_rates["players"].drop(columns=["player_id"], errors="ignore").rename(
+        columns={"player_name": "Player", "agents": "Agent(s)", "rounds": "Rounds", "share": "Share"},
+    )
+    agent_shares = selected_rates["agents"].rename(
+        columns={"agent": "Agent", "rounds": "Rounds", "share": "Share"},
+    )
     with player_column:
-        st.markdown("**Per player · share of Operator rounds**")
-        st.dataframe(player_shares, width="stretch", hide_index=True)
+        st.markdown(f"**Per player · {selected_side} Operator rounds**")
+        st.dataframe(
+            player_shares, width="stretch", hide_index=True,
+            column_config={"Share": st.column_config.ProgressColumn("Share", format="%.0f%%", min_value=0, max_value=100)},
+        )
     with agent_column:
-        st.markdown("**Per agent · share of Operator rounds**")
-        st.dataframe(agent_shares, width="stretch", hide_index=True)
+        st.markdown(f"**Per agent · {selected_side} Operator rounds**")
+        st.dataframe(
+            agent_shares, width="stretch", hide_index=True,
+            column_config={"Share": st.column_config.ProgressColumn("Share", format="%.0f%%", min_value=0, max_value=100)},
+        )
 
     st.subheader(f"Possession · {selected_side.title()} rounds")
-    st.plotly_chart(_operator_strip_figure(strip_rounds, rates["players"]), width="stretch")
+    st.plotly_chart(_operator_strip_figure(strip_rounds, selected_rates["players"]), width="stretch")
     st.metric(
         "Handoff rate between consecutive Operator rounds",
         f"{handoff['handoffs']} / {handoff['comparisons']} ({handoff['rate']:.0f}%)",
     )
     st.caption("A handoff is a different holder set between successive Operator rounds; comparisons reset each game and across missing snapshots.")
 
-    engagements, player_aggression = _profile_engagements(
-        tables["kills"], tables["damage"], buys, tables["spawn_positions"],
-        team_id, map_name, site_centres,
-    )
     st.subheader("Defense setup positions and engagements")
-    st.caption("Operator-holder kill/damage encounters only; colors show elapsed time from round start.")
+    st.caption("Operator-holder kill/damage encounters only; times are measured from round-ended-freezetime.")
     if len(engagements) < 20:
         st.warning(f"Small sample: {len(engagements)} deduplicated Operator engagements on defense.")
-    shape = shapes.get(map_name)
-    if shape is None:
+    if map_name == "All maps":
+        st.info("Pick one map in the Map filter to view the engagement map; All maps is used for aggregate timing evidence only.")
+    elif shapes.get(map_name) is None:
         st.warning("No cached positions are available for this map.")
     elif engagements.empty:
         st.info("No recorded defense Operator engagements match this team and map.")
     else:
-        st.plotly_chart(_operator_map_figure(shape, engagements, map_name, site_centres), width="stretch")
+        st.plotly_chart(_operator_map_figure(shapes[map_name], engagements, map_name, site_centres), width="stretch")
 
     st.subheader("Aggressive vs passive angles")
     st.caption("Spawn anchors are medians of freeze-end player positions by map and side; this is a rough directional proxy.")
-    if player_aggression.empty:
-        st.info("No engagements are available to score.")
+    profiled_players = player_aggression[player_aggression["engagements"].ge(10)]
+    if profiled_players.empty:
+        st.info("No player has 10 or more defense engagements in this filter; per-player angle profiles are withheld.")
     else:
-        st.dataframe(player_aggression, width="stretch", hide_index=True)
-        primary = rates["players"].iloc[0] if not rates["players"].empty else None
-        if primary is not None:
-            primary_engagements = engagements[engagements["player_id"].astype(str).eq(str(primary["player_id"]))]
-            if primary_engagements.empty:
-                primary_engagements = engagements[engagements["player_name"].eq(primary["player_name"])]
-            if primary_engagements.empty:
-                st.info(f"{primary['player_name']} held the most Operators, but has no recorded defense engagements in this sample.")
-            else:
-                timed = primary_engagements[pd.to_numeric(primary_engagements["seconds_into_round"], errors="coerce").notna()]
-                early = timed[timed["seconds_into_round"].between(0, 20, inclusive="left")]
-                site = _most_common(primary_engagements["site_label"]) or "an unknown area"
-                aggressive_count = int(primary_engagements["aggressiveness"].eq("aggressive").sum())
-                if aggressive_count / len(primary_engagements) >= 0.5:
-                    angle_style = "holds aggressive angles"
-                elif primary_engagements["aggressiveness"].eq("passive").mean() >= 0.5:
-                    angle_style = "holds passive angles"
-                else:
-                    angle_style = "takes standard angles"
-                if len(timed):
-                    early_percent = 100 * len(early) / len(timed)
-                    headline = (
-                        f"{team_name}'s primary Operator player {primary['player_name']} {angle_style} at {site} — "
-                        f"{early_percent:.0f}% of his Op engagements happen 0–20 s into the round "
-                        f"({len(early)}/{len(timed)})."
-                    )
-                else:
-                    headline = f"{team_name}'s primary Operator player {primary['player_name']} {angle_style} at {site}; engagement timing is unavailable."
-                st.markdown(f"**{headline}**")
-        st.caption(f"Engagement sample: {len(engagements)} defense engagements; time buckets omit unknown times.")
+        display_aggression = profiled_players.drop(columns=["player_id"], errors="ignore")
+        st.dataframe(display_aggression, width="stretch", hide_index=True)
+    st.caption(f"Engagement sample: {len(engagements)} defense engagements; time buckets omit unknown times.")
     st.caption(
         "Possession is sampled at round-ended-freezetime and does not track later pickups or drops. "
         "Rapid damage ticks against one player are grouped with a resulting kill when within 1.5 seconds."
@@ -637,7 +720,23 @@ def main():
     if not maps:
         st.warning("No rounds are available for this team.")
         st.stop()
-    map_name = st.sidebar.selectbox("Map", maps, index=0, key=f"map_{team_id}")
+    active_tab = st.session_state.get("scout_tabs", "Utility Map")
+    if active_tab == "Operator Profiler":
+        map_options = ["All maps", *maps]
+        map_widget_key = f"operator_map_widget_{team_id}"
+        persistent_map_key = f"operator_map_selection_{team_id}"
+    else:
+        map_options = maps
+        map_widget_key = f"utility_map_widget_{team_id}"
+        persistent_map_key = f"utility_map_selection_{team_id}"
+    if persistent_map_key not in st.session_state or st.session_state[persistent_map_key] not in map_options:
+        st.session_state[persistent_map_key] = map_options[0]
+    if map_widget_key not in st.session_state or st.session_state[map_widget_key] not in map_options:
+        st.session_state[map_widget_key] = st.session_state[persistent_map_key]
+    map_name = st.sidebar.selectbox(
+        "Map", map_options, key=map_widget_key,
+        on_change=_persist_filter_value, args=(map_widget_key, persistent_map_key),
+    )
     selected_side = st.sidebar.selectbox("Side", ("attack", "defense"), index=1, key="shared_side")
     side = "attacker" if selected_side == "attack" else "defender"
     shapes = load_shapes(casts, kills)
