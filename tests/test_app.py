@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pandas as pd
 
 from analysis.abilities import CATEGORIES
+from analysis.text import team_possessive
 from app import (
     _category_counts,
     _map_figure,
@@ -20,6 +21,9 @@ from app import (
 
 
 class UtilityMapAppTests(unittest.TestCase):
+    def test_team_possessive_handles_s_and_other_endings(self):
+        self.assertEqual(team_possessive("G2 Esports"), "G2 Esports'")
+        self.assertEqual(team_possessive("Cloud9"), "Cloud9's")
     def test_map_axis_ranges_use_five_percent_padding(self):
         shape = {"x_min": -100.0, "x_max": 300.0, "y_min": -50.0, "y_max": 150.0}
 

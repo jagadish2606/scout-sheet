@@ -8,7 +8,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from analysis.abilities import CATEGORIES, ability_mapping
-from analysis.counter_plan import generate_counter_cards
+from analysis.counter_plan import generate_counter_plan
 from analysis.map_shape import density_for_points, load_map_shapes
 from analysis.operator import (
     aggressiveness_label,
@@ -19,6 +19,7 @@ from analysis.operator import (
     operator_engagements,
 )
 from analysis.sites import label_zones, load_site_centres, site_label
+from analysis.text import team_possessive
 from analysis.zones import aggregate_zone_cells, eligible_rounds, filter_casts, match_casts_to_rounds
 
 
@@ -360,10 +361,6 @@ def _operator_strip_figure(rounds, player_shares, show_all=False):
     return figure
 
 
-def _team_possessive(team_name):
-    return f"{team_name}'" if str(team_name).rstrip().casefold().endswith("s") else f"{team_name}'s"
-
-
 def _operator_headline(
     team_name, primary, total_rounds, engagements, map_name, selected_side,
     operator_rounds=None, side_buy_rates=None,
@@ -376,7 +373,7 @@ def _operator_headline(
         if operator_rounds:
             share = float(primary.get("share", 100 * held_rounds / operator_rounds))
             facts.append(
-                f"{player_name} holds {_team_possessive(team_name)} Operator in {share:.0f}% of their "
+                f"{player_name} holds {team_possessive(team_name)} Operator in {share:.0f}% of their "
                 f"{selected_side} Operator rounds ({held_rounds}/{operator_rounds})."
             )
     side_buy_rates = side_buy_rates or {}
@@ -776,29 +773,50 @@ def _render_counter_plan_tab(tables, team_name, team_id, map_name, selected_side
     evidence[1].metric("Rounds analysed", f"{round_count:,}")
     if round_count < 20:
         st.warning(f"Small sample: only {round_count} {selected_side} rounds match this team/map/side selection.")
-    st.caption("Rule-based templates from local cache evidence; no external AI service is used.")
-    cards = generate_counter_cards(
+    st.caption(
+        "Utility tendencies use this map; Operator-holder and buy-rate evidence pools all maps for the selected side. "
+        "All card templates are generated locally."
+    )
+    plan = generate_counter_plan(
         tables["rounds"], tables["casts"], tables["buys"], tables["kills"], tables["damage"],
         tables["spawn_positions"], team_id, team_name, map_name, side, site_centres,
         self_scout=team_name in {"Cloud9", "Cloud9 GC"},
     )
+    cards = plan["cards"]
     if not cards:
         st.info("No strong tendencies at this sample size.")
-        return
     for index, card in enumerate(cards):
         with st.container(border=True):
             st.markdown(f"**{card['tendency']}**")
-            st.caption(f"Evidence: {card['evidence']} · Confidence: {card['confidence']}")
-            st.write(f"Suggested response: {card['response']}")
+            st.markdown("\n".join(f"- {fact}" for fact in card["facts"]))
+            st.markdown(_counter_confidence_badge(card["confidence"]), unsafe_allow_html=True)
+            st.info(card["response"])
             st.button(
                 "Show on map",
                 key=f"counter_show_{index}_{card['type'].lower().replace(' ', '_')}",
                 on_click=_navigate_counter_card,
                 args=(
-                    card["navigation_tab"], map_name, selected_side, team_id,
+                    card["navigation_tab"], card["map"], selected_side, team_id,
                     card.get("category"), card.get("agent"),
                 ),
             )
+    if plan["watch_list"]:
+        st.markdown("### Watch list")
+        for card in plan["watch_list"]:
+            facts = " · ".join(card["facts"])
+            st.markdown(f"- **{card['title']}** — {facts} · Low confidence")
+
+
+def _counter_confidence_badge(confidence):
+    styles = {
+        "High": "background:#166534;color:#dcfce7",
+        "Medium": "background:#854d0e;color:#fef9c3",
+    }
+    style = styles.get(confidence, "background:#334155;color:#e2e8f0")
+    return (
+        f"<span style='display:inline-block;padding:3px 9px;border-radius:999px;"
+        f"font-weight:700;{style}'>{confidence} confidence</span>"
+    )
 
 
 def main():
