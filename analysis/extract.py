@@ -25,9 +25,19 @@ TABLE_COLUMNS = {
         "killer_agent", "victim_id", "victim_name", "victim_team_id", "victim_team_name",
         "victim_side", "victim_agent", "weapon", "killer_x", "killer_y", "victim_x", "victim_y",
     ],
+    "damage": [
+        "series_id", "game_id", "map", "round_number", "seconds_into_round",
+        "player_id", "player_name", "team_id", "team_name", "side", "agent",
+        "victim_id", "victim_name", "victim_team_id", "victim_team_name", "victim_side",
+        "weapon", "damage_amount", "x", "y", "victim_x", "victim_y",
+    ],
     "buys": [
         "series_id", "game_id", "map", "round_number", "player_id", "player_name",
         "team_id", "side", "agent", "primary_weapon", "has_operator",
+    ],
+    "spawn_positions": [
+        "series_id", "game_id", "map", "round_number", "player_id", "player_name",
+        "team_id", "team_name", "side", "agent", "x", "y",
     ],
     "plants": [
         "series_id", "game_id", "map", "round_number", "planter_id", "team_id",
@@ -278,6 +288,33 @@ def _weapon_from_kill(actor, game_id, weapon_counts):
     return None
 
 
+def _damage_sources(actor):
+    state = _event_player_state(actor)
+    state_game = state.get("game") or {}
+    delta_game = ((actor or {}).get("stateDelta") or {}).get("game") or {}
+    sources = delta_game.get("damageDealtSources")
+    if not isinstance(sources, list):
+        sources = state_game.get("damageDealtSources")
+    if not isinstance(sources, list):
+        return []
+    result = []
+    for item in sources:
+        if not isinstance(item, dict):
+            continue
+        source = item.get("source") or {}
+        weapon = source.get("name") or source.get("id") or item.get("id")
+        if weapon is None:
+            continue
+        result.append((str(weapon).casefold(), item.get("damageAmount")))
+    return result
+
+
+def _entity_position(entity):
+    state = _event_player_state(entity)
+    game = state.get("game") or {}
+    return game.get("position") or state.get("position") or {}
+
+
 def _frame_location(record):
     quality = record.get("quality")
     if quality == "gap_exceeded":
@@ -484,6 +521,22 @@ def extract_series(series_id, data_dir=DATA_DIR):
                                 "has_operator": "operator" in item_ids,
                             }
                             rows["buys"].append(row)
+                            position = _entity_position({"state": player})
+                            if position.get("x") is not None and position.get("y") is not None:
+                                rows["spawn_positions"].append({
+                                    "series_id": series_id,
+                                    "game_id": game_id,
+                                    "map": _game_map(game_context, game_id, game_metadata),
+                                    "round_number": round_number,
+                                    "player_id": player_id,
+                                    "player_name": player.get("name"),
+                                    "team_id": team_id,
+                                    "team_name": team_name,
+                                    "side": side,
+                                    "agent": _character_name(player.get("character")),
+                                    "x": position.get("x"),
+                                    "y": position.get("y"),
+                                })
                 continue
 
             if event_type == "player-used-ability":
@@ -538,10 +591,8 @@ def extract_series(series_id, data_dir=DATA_DIR):
                 target = event.get("target") or {}
                 killer_id, killer = _player_fields(actor, game_id, game_context.get(game_id, {}), players)
                 victim_id, victim = _player_fields(target, game_id, game_context.get(game_id, {}), players)
-                killer_state = _event_player_state(actor).get("game") or {}
-                victim_state = _event_player_state(target).get("game") or {}
-                killer_position = killer_state.get("position") or {}
-                victim_position = victim_state.get("position") or {}
+                killer_position = _entity_position(actor)
+                victim_position = _entity_position(target)
                 rows["kills"].append({
                     "series_id": series_id,
                     "game_id": game_id,
@@ -566,8 +617,43 @@ def extract_series(series_id, data_dir=DATA_DIR):
                     "victim_x": victim_position.get("x"),
                     "victim_y": victim_position.get("y"),
                 })
+                continue
 
-    for table_name in ("casts", "kills"):
+            if event_type == "player-damaged-player":
+                actor = event.get("actor") or {}
+                target = event.get("target") or {}
+                player_id, player = _player_fields(actor, game_id, game_context.get(game_id, {}), players)
+                victim_id, victim = _player_fields(target, game_id, game_context.get(game_id, {}), players)
+                actor_position = _entity_position(actor)
+                victim_position = _entity_position(target)
+                sources = _damage_sources(actor) or [(None, None)]
+                for weapon, damage_amount in sources:
+                    rows["damage"].append({
+                        "series_id": series_id,
+                        "game_id": game_id,
+                        "map": _game_map(game_context, game_id, game_metadata),
+                        "round_number": round_number,
+                        "_occurred_at": occurred_at,
+                        "player_id": player_id,
+                        "player_name": player.get("player_name"),
+                        "team_id": player.get("team_id"),
+                        "team_name": player.get("team_name"),
+                        "side": player.get("side"),
+                        "agent": player.get("agent"),
+                        "victim_id": victim_id,
+                        "victim_name": victim.get("player_name"),
+                        "victim_team_id": victim.get("team_id"),
+                        "victim_team_name": victim.get("team_name"),
+                        "victim_side": victim.get("side"),
+                        "weapon": weapon,
+                        "damage_amount": damage_amount,
+                        "x": actor_position.get("x"),
+                        "y": actor_position.get("y"),
+                        "victim_x": victim_position.get("x"),
+                        "victim_y": victim_position.get("y"),
+                    })
+
+    for table_name in ("casts", "kills", "damage"):
         for row in rows[table_name]:
             row["seconds_into_round"] = _elapsed_seconds(
                 round_live_at.get((str(row["game_id"]), row["round_number"])),

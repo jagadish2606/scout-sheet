@@ -15,7 +15,9 @@ SAMPLE_COLUMNS = {
     "rounds": ["series_id", "game_id", "map", "round_number", "round_start_time", "team_name", "side", "won_round"],
     "casts": ["series_id", "game_id", "map", "round_number", "seconds_into_round", "player_name", "team_name", "agent", "ability", "slot", "x", "y", "quality"],
     "kills": ["series_id", "game_id", "map", "round_number", "seconds_into_round", "killer_name", "killer_team_name", "killer_side", "victim_name", "victim_team_name", "victim_side", "weapon", "killer_x", "killer_y", "victim_x", "victim_y"],
+    "damage": ["series_id", "game_id", "map", "round_number", "seconds_into_round", "player_name", "team_name", "side", "victim_name", "weapon", "damage_amount", "x", "y"],
     "buys": ["series_id", "game_id", "map", "round_number", "player_name", "team_id", "side", "agent", "primary_weapon", "has_operator"],
+    "spawn_positions": ["series_id", "game_id", "map", "round_number", "player_name", "team_name", "side", "agent", "x", "y"],
     "plants": ["series_id", "game_id", "map", "round_number", "planter_id", "team_name", "x", "y"],
 }
 

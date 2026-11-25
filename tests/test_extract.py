@@ -15,6 +15,7 @@ def _game(game_id, round_number, start_time, team1_side, map_name):
             "players": [{
                 "id": f"{game_id}-p1", "name": "Player One", "character": {"id": "jett", "name": "jett"},
                 "inventory": {"items": [{"id": "melee"}, {"id": "operator"}]},
+                "position": {"x": 100, "y": 200},
             }],
         },
         {
@@ -22,6 +23,7 @@ def _game(game_id, round_number, start_time, team1_side, map_name):
             "players": [{
                 "id": f"{game_id}-p2", "name": "Player Two", "character": {"id": "sova", "name": "sova"},
                 "inventory": {"items": [{"id": "melee"}, {"id": "vandal"}]},
+                "position": {"x": 500, "y": 600},
             }],
         },
     ]
@@ -147,6 +149,25 @@ class ExtractSeriesTests(unittest.TestCase):
             },
             "seriesState": {"games": [{"id": "game-1", "segments": [{"id": "round-1", "type": "round"}]}]},
         }
+        damage_event = {
+            "id": "damage-1", "type": "player-damaged-player",
+            "actor": {
+                "id": "game-1-p1", "state": {
+                    "id": "game-1-p1", "name": "Player One", "teamId": "team-a", "side": "defender",
+                    "game": {"position": {"x": 110, "y": 220}},
+                },
+                "stateDelta": {"game": {"damageDealtSources": [
+                    {"source": {"name": "operator"}, "damageAmount": 150},
+                ]}},
+            },
+            "target": {
+                "id": "game-1-p2", "state": {
+                    "id": "game-1-p2", "name": "Player Two", "teamId": "team-b", "side": "attacker",
+                    "game": {"position": {"x": 310, "y": 420}},
+                },
+            },
+            "seriesState": {"games": [{"id": "game-1"}]},
+        }
         won_event = {
             "type": "team-won-round", "actor": {"id": "team-b", "type": "team"},
             "target": {"id": "round-1", "type": "round"},
@@ -189,6 +210,7 @@ class ExtractSeriesTests(unittest.TestCase):
             _envelope(ability_event, "2025-01-01T00:00:10Z"),
             _envelope(missing_supplement_cast, "2025-01-01T00:00:11Z"),
             _envelope(kill_event, "2025-01-01T00:00:12Z"),
+            _envelope(damage_event, "2025-01-01T00:00:14Z"),
             _envelope(plant_event, "2025-01-01T00:00:13Z"),
             _envelope(won_event, "2025-01-01T00:00:15Z"),
             _envelope(freeze_event, "2025-01-01T00:00:20Z"),
@@ -239,6 +261,14 @@ class ExtractSeriesTests(unittest.TestCase):
         self.assertEqual((kill["killer_x"], kill["killer_y"], kill["victim_x"], kill["victim_y"]), (100, 200, 300, 400))
         plant = tables["plants"].iloc[0]
         self.assertEqual((plant["x"], plant["y"], plant["team_id"]), (700, 800, "team-a"))
+        damage = tables["damage"].iloc[0]
+        self.assertEqual(damage["weapon"], "operator")
+        self.assertEqual(damage["damage_amount"], 150)
+        self.assertEqual((damage["x"], damage["y"], damage["victim_x"], damage["victim_y"]), (110, 220, 310, 420))
+        self.assertEqual(damage["seconds_into_round"], -6.0)
+        spawn = tables["spawn_positions"]
+        self.assertEqual(len(spawn), 2)
+        self.assertEqual(set(spawn["side"]), {"attacker", "defender"})
         buy = tables["buys"].iloc[0]
         self.assertEqual(buy["primary_weapon"], "operator")
         self.assertTrue(buy["has_operator"])

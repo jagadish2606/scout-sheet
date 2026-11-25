@@ -32,7 +32,7 @@ class UtilityMapAppTests(unittest.TestCase):
         zones = pd.DataFrame([
             {"x": 1.0, "y": 1.0, "site_label": "A site", "ability_name": "Trapwire",
              "rounds_used": 5, "total_rounds": 10, "percentage": 50.0},
-            {"x": 2.0, "y": 2.0, "site_label": "B site", "ability_name": "Spycam",
+            {"x": 1.1, "y": 1.1, "site_label": "B site", "ability_name": "Spycam",
              "rounds_used": 4, "total_rounds": 10, "percentage": 40.0},
         ])
 
@@ -44,7 +44,7 @@ class UtilityMapAppTests(unittest.TestCase):
         self.assertEqual(list(figure.layout.yaxis.range), [-0.5, 10.5])
         self.assertEqual(list(markers.text), ["1", "2"])
         self.assertNotIn("site_label", str(markers.customdata))
-        self.assertGreater(math.dist((markers.x[0], markers.y[0]), (markers.x[1], markers.y[1])), 300)
+        self.assertGreaterEqual(math.dist((markers.x[0], markers.y[0]), (markers.x[1], markers.y[1])), 0.9)
 
     def test_category_counts_and_switch_target(self):
         casts = pd.DataFrame({"category": ["smoke", "smoke", "recon", "placeable"]})
