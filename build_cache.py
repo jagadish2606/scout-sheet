@@ -6,6 +6,8 @@ from pathlib import Path
 import pandas as pd
 
 from analysis.extract import TABLE_COLUMNS, extract_series
+from analysis.landing import add_landing_estimates, print_landing_sanity_report
+from analysis.map_shape import load_map_shapes
 from analysis.sites import load_site_centres
 from config import DATA_DIR
 
@@ -13,7 +15,7 @@ from config import DATA_DIR
 CLOUD9_NAMES = {"Cloud9", "Cloud9 GC"}
 SAMPLE_COLUMNS = {
     "rounds": ["series_id", "game_id", "game_number", "map", "round_number", "round_start_time", "round_live_time", "team_name", "opponent_name", "side", "won_round"],
-    "casts": ["series_id", "game_id", "map", "round_number", "seconds_into_round", "player_name", "team_name", "agent", "ability", "slot", "x", "y", "quality"],
+    "casts": ["series_id", "game_id", "map", "round_number", "seconds_into_round", "player_name", "team_name", "agent", "ability", "slot", "x", "y", "quality", "landing_x", "landing_y", "landing_method", "estimated"],
     "kills": ["series_id", "game_id", "map", "round_number", "seconds_into_round", "event_time", "killer_name", "killer_team_name", "killer_side", "victim_name", "victim_team_name", "victim_side", "weapon", "killer_x", "killer_y", "victim_x", "victim_y"],
     "damage": ["series_id", "game_id", "map", "round_number", "seconds_into_round", "event_time", "player_name", "team_name", "side", "victim_name", "weapon", "damage_amount", "x", "y"],
     "buys": ["series_id", "game_id", "map", "round_number", "player_name", "team_id", "side", "agent", "primary_weapon", "has_operator"],
@@ -94,9 +96,15 @@ def build_cache(series_ids=None, limit=None, data_dir=DATA_DIR, cache_dir=None, 
     for table_name, columns in TABLE_COLUMNS.items():
         frames = combined[table_name]
         frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=columns)
+        final[table_name] = frame
+
+    shapes = load_map_shapes(final["casts"], final["kills"], cache_dir)
+    final["casts"] = add_landing_estimates(final["casts"], shapes)
+    print_landing_sanity_report(final["casts"], shapes)
+
+    for table_name, frame in final.items():
         path = cache_dir / f"{table_name}.parquet"
         frame.to_parquet(path, index=False)
-        final[table_name] = frame
         print(f"{table_name}: {len(frame):,} rows -> {path}")
         if sample_rows > 0 and not frame.empty:
             sample_columns = [column for column in SAMPLE_COLUMNS[table_name] if column in frame]

@@ -135,6 +135,7 @@ def _navigate_counter_card(target_tab, map_name, selected_side, team_id, categor
     if target_tab == "Utility Map":
         st.session_state["ability_category"] = category or "all"
         st.session_state[f"utility_agent_widget_{team_id}"] = agent or "all"
+        st.session_state[f"utility_position_{team_id}_{category or 'all'}"] = "Caster"
 
 
 def _sentinel_summary(buys, team_id, map_name):
@@ -168,7 +169,7 @@ def _team_labels(rounds):
     ).reset_index(drop=True)
 
 
-def _map_figure(shape, casts, zones, show_dots, map_name, site_centres):
+def _map_figure(shape, casts, zones, show_dots, map_name, site_centres, position_mode="Caster"):
     figure = go.Figure()
     figure.add_trace(go.Heatmap(
         x=shape["x"], y=shape["y"], z=shape["density"],
@@ -191,6 +192,18 @@ def _map_figure(shape, casts, zones, show_dots, map_name, site_centres):
                 name="Filtered cast density",
             ))
         if show_dots:
+            if position_mode == "Estimated landing" and {"caster_x", "caster_y", "estimated"}.issubset(located.columns):
+                estimated = located[
+                    located["estimated"].fillna(False).astype(bool)
+                    & located["caster_x"].notna() & located["caster_y"].notna()
+                    & ((located["x"] != located["caster_x"]) | (located["y"] != located["caster_y"]))
+                ]
+                for cast in estimated.itertuples(index=False):
+                    figure.add_annotation(
+                        x=float(cast.x), y=float(cast.y), ax=float(cast.caster_x), ay=float(cast.caster_y),
+                        xref="x", yref="y", axref="x", ayref="y", showarrow=True,
+                        arrowhead=2, arrowsize=0.7, arrowwidth=1, arrowcolor="rgba(248,250,252,0.65)",
+                    )
             figure.add_trace(go.Scattergl(
                 x=located["x"], y=located["y"], mode="markers",
                 marker={"size": 5, "color": "#f8fafc", "opacity": 0.62, "line": {"width": 0}},
@@ -238,6 +251,20 @@ def _map_figure(shape, casts, zones, show_dots, map_name, site_centres):
     )
     figure.update_yaxes(scaleanchor="x", scaleratio=1, constrain="range")
     return figure
+
+
+def _casts_for_position(casts, position_mode):
+    """Return cast rows with x/y set to the requested display and zone position."""
+    selected = casts.copy()
+    if position_mode != "Estimated landing":
+        return selected
+    selected["caster_x"] = pd.to_numeric(selected["x"], errors="coerce")
+    selected["caster_y"] = pd.to_numeric(selected["y"], errors="coerce")
+    landing_x = pd.to_numeric(selected["landing_x"], errors="coerce") if "landing_x" in selected else selected["caster_x"]
+    landing_y = pd.to_numeric(selected["landing_y"], errors="coerce") if "landing_y" in selected else selected["caster_y"]
+    selected["x"] = landing_x.fillna(selected["caster_x"])
+    selected["y"] = landing_y.fillna(selected["caster_y"])
+    return selected
 
 
 def _operator_strip_figure(rounds, player_shares, show_all=False):
@@ -559,7 +586,20 @@ def _render_utility_tab(tables, team_name, team_id, map_name, selected_side, sid
         category_base_casts if category == "all"
         else category_base_casts[category_base_casts["category"].eq(category)].copy()
     )
-    zones = label_zones(aggregate_zone_cells(filtered_casts, denominator), map_name, site_centres)
+    position_key = f"utility_position_{team_id}_{category}"
+    has_estimates = filtered_casts.get(
+        "estimated", pd.Series(False, index=filtered_casts.index),
+    ).fillna(False).astype(bool).any()
+    if position_key not in st.session_state:
+        st.session_state[position_key] = "Estimated landing" if category == "placeable" or has_estimates else "Caster"
+    position_mode = st.radio(
+        "Position", ("Caster", "Estimated landing"), horizontal=True, key=position_key,
+        help="Estimated landing projects aim direction to a wall or range limit using the density silhouette.",
+    )
+    position_casts = _casts_for_position(filtered_casts, position_mode)
+    if position_mode == "Estimated landing":
+        st.caption("Estimated landing points use aim direction and the walkability mask; they are not exact utility positions.")
+    zones = label_zones(aggregate_zone_cells(position_casts, denominator), map_name, site_centres)
     shape = shapes.get(map_name)
     series_count = int(denominator["series_id"].nunique())
     game_count = int(denominator[["series_id", "game_id"]].drop_duplicates().shape[0])
@@ -602,8 +642,9 @@ def _render_utility_tab(tables, team_name, team_id, map_name, selected_side, sid
             "player, agent, category, remote-cast and time filters affect casts, not that denominator. "
             "Round time starts at `round-ended-freezetime`; negative seconds are buy-phase casts. Site labels "
             "are approximate, based on plant positions clustered around named site callouts. The grey background "
-            "uses all-team cast and kill positions from the local cache rather than Riot map artwork. Ability "
-            "positions mark caster locations, not utility landing points."
+            "uses all-team cast and kill positions from the local cache rather than Riot map artwork. Estimated "
+            "landing points project the caster's aim direction to a density-derived wall or range limit; they "
+            "are estimates, not exact utility landing positions or verified wall geometry."
         )
 
     map_column, zones_column = st.columns([1.7, 1])
@@ -613,7 +654,7 @@ def _render_utility_tab(tables, team_name, team_id, map_name, selected_side, sid
             st.warning("No cached positions are available for this map.")
         else:
             st.plotly_chart(
-                _map_figure(shape, filtered_casts, zones, show_dots, map_name, site_centres),
+                _map_figure(shape, position_casts, zones, show_dots, map_name, site_centres, position_mode),
                 width="stretch",
             )
         if not filtered_casts.empty:

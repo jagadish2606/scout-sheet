@@ -128,6 +128,7 @@ class CounterPlanTests(unittest.TestCase):
         self.assertNotIn("Early/late", by_type["Operator"]["tendency"])
         self.assertNotIn("first 20 s", by_type["Operator"]["response"])
         self.assertEqual(by_type["Operator"]["map"], "All maps")
+        self.assertEqual(by_type["Side economy"]["confidence"], "High")
         self.assertIn("40% of defense rounds versus 4% on attack", by_type["Side economy"]["tendency"])
 
         sparse_buys = buys[buys["side"].eq("defender") | buys["round_number"].le(55)]
@@ -146,6 +147,58 @@ class CounterPlanTests(unittest.TestCase):
         self.assertIn("Consider varying", self_economy["response"])
         self.assertNotIn("Expect the Operator more", self_economy["response"])
         self.assertNotIn("dry-peek", self_economy["response"])
+
+    def test_side_buy_rate_gap_is_a_main_card_even_when_prevalence_is_low(self):
+        rounds = pd.DataFrame([
+            {
+                "series_id": "s1", "game_id": "g1", "round_number": number,
+                "team_id": "team-a", "map": "Lotus", "side": side,
+            }
+            for side, start in (("defender", 1), ("attacker", 51))
+            for number in range(start, start + 50)
+        ])
+        buys = pd.DataFrame([
+            {
+                "series_id": "s1", "game_id": "g1", "round_number": row.round_number,
+                "team_id": "team-a", "map": "Lotus", "side": row.side,
+                "player_id": "p1", "player_name": "Player", "agent": "jett",
+                "has_operator": (row.side == "defender" and row.round_number <= 15)
+                or (row.side == "attacker" and row.round_number <= 55),
+            }
+            for row in rounds.itertuples(index=False)
+        ])
+
+        plan = generate_counter_plan(
+            rounds, pd.DataFrame(), buys, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(),
+            "team-a", "Test Team", "Lotus", "defender",
+        )
+        card = next(card for card in plan["cards"] if card["type"] == "Side economy")
+
+        self.assertIn("30% of defense rounds versus 10% on attack", card["tendency"])
+        self.assertEqual(card["confidence"], "High")
+        self.assertNotIn(card, plan["watch_list"])
+
+    def test_operator_location_uses_selected_map_engagements_only(self):
+        rounds, buys, kills, spawn_positions = self._operator_profile_tables()
+        centres = {
+            "ascent": {"A": {"x": 50.0, "y": 0.0}},
+            "lotus": {"B": {"x": 50.0, "y": 0.0}},
+        }
+
+        lotus_plan = generate_counter_plan(
+            rounds, pd.DataFrame(), buys, kills, pd.DataFrame(), spawn_positions,
+            "c9", "G2 Esports", "Lotus", "defender", centres,
+        )
+        ascent_plan = generate_counter_plan(
+            rounds, pd.DataFrame(), buys, kills, pd.DataFrame(), spawn_positions,
+            "c9", "G2 Esports", "Ascent", "defender", centres,
+        )
+        lotus_response = next(card for card in lotus_plan["cards"] if card["type"] == "Operator")["response"]
+        ascent_response = next(card for card in ascent_plan["cards"] if card["type"] == "Operator")["response"]
+
+        self.assertIn("across the map pool", lotus_response)
+        self.assertNotIn("Ascent A site", lotus_response)
+        self.assertIn("Ascent A site", ascent_response)
 
     def test_operator_late_passive_profile_never_gets_first_twenty_advice(self):
         rounds, buys, kills, spawn_positions = self._operator_profile_tables()

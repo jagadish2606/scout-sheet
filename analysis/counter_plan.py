@@ -67,6 +67,15 @@ def _card_confidence(rounds, percentage):
     return None
 
 
+def _side_gap_confidence(attack, defense):
+    sample_size = min(int(attack.get("observed_rounds", 0)), int(defense.get("observed_rounds", 0)))
+    if sample_size >= 40:
+        return "High"
+    if sample_size >= 20:
+        return "Medium"
+    return None
+
+
 def _buy_snapshot_fact(side, summary):
     observed = int(summary.get("observed_rounds", 0))
     if not observed:
@@ -197,16 +206,15 @@ def _operator_cards(
                     if defender_spawn is not None and attacker_spawn is not None else None
                 )
                 labels.append(aggressiveness_label(score))
-                zone = site_label(event.map, event.x, event.y, site_centres)
-                if zone not in {"Site unknown", "mid"}:
-                    locations.append(f"{str(event.map).title()} {zone}")
+                if str(event.map).casefold() == str(map_name).casefold():
+                    zone = site_label(event.map, event.x, event.y, site_centres)
+                    if zone not in {"Site unknown", "mid"}:
+                        locations.append(f"{str(event.map).title()} {zone}")
             aggression = pd.Series(labels).value_counts()
             aggression_count = int(aggression.sum() - aggression.get("unknown", 0))
             aggressive_count = int(aggression.get("aggressive", 0))
             passive_count = int(aggression.get("passive", 0))
-            location = (
-                str(pd.Series(locations).value_counts().index[0]) if locations else "a deep angle across maps"
-            )
+            location = str(pd.Series(locations).value_counts().index[0]) if locations else None
 
             early_signal = timing_count >= 10 and early_count / timing_count >= 0.5
             late_signal = timing_count >= 10 and late_count / timing_count >= 0.6
@@ -240,18 +248,21 @@ def _operator_cards(
                 if timing_count < 10 and aggression_count < 10:
                     advice = "Use flashes or smokes to clear likely Operator angles rather than dry-peeking."
                 elif pattern == "early":
+                    zone_detail = f" at {location}" if location else " across the map pool"
                     advice = (
-                        f"Expect an early, aggressive Op at {location}: don't dry-peek in the first 20 s; "
+                        f"Expect an early, aggressive Op{zone_detail}: don't dry-peek in the first 20 s; "
                         "flash or smoke the angle, or bait with a second player."
                     )
                 elif pattern == "late":
+                    zone_detail = f" at {location}" if location else " across the map pool"
                     advice = (
-                        f"Expect a passive Op holding deep at {location} later in the round: avoid wide swings late, "
+                        f"Expect a passive Op holding deep{zone_detail} later in the round: avoid wide swings late, "
                         "clear deep angles with utility, and force rotations early."
                     )
                 else:
+                    zone_detail = f" around {location}" if location else " across the map pool"
                     advice = (
-                        f"Expect both early pressure and late deep holds around {location}: avoid isolated dry-peeks, "
+                        f"Expect both early pressure and late deep holds{zone_detail}: avoid isolated dry-peeks, "
                         "clear angles with utility, and vary your timing."
                     )
 
@@ -303,7 +314,7 @@ def _operator_cards(
         if difference >= 10:
             higher_side, higher = ("attack", attack) if attack["rate"] > defense["rate"] else ("defense", defense)
             lower_side, lower = ("defense", defense) if higher_side == "attack" else ("attack", attack)
-            confidence = _card_confidence(higher["observed_rounds"], higher["rate"])
+            confidence = _side_gap_confidence(attack, defense)
             if confidence:
                 if self_scout:
                     tendency = (

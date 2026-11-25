@@ -18,6 +18,7 @@ TABLE_COLUMNS = {
         "series_id", "game_id", "map", "round_number", "seconds_into_round",
         "player_id", "player_name", "team_id", "team_name", "side", "agent",
         "ability", "slot", "x", "y", "z", "view_x", "view_y", "view_z", "quality",
+        "landing_x", "landing_y", "landing_method", "estimated",
     ],
     "kills": [
         "series_id", "game_id", "map", "round_number", "seconds_into_round", "event_time",

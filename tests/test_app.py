@@ -9,6 +9,7 @@ from analysis.text import team_possessive
 from app import (
     _category_counts,
     _map_figure,
+    _casts_for_position,
     _most_common_category,
     _operator_headline,
     _operator_strip_figure,
@@ -52,6 +53,27 @@ class UtilityMapAppTests(unittest.TestCase):
         self.assertEqual(list(markers.text), ["1", "2"])
         self.assertNotIn("site_label", str(markers.customdata))
         self.assertGreaterEqual(math.dist((markers.x[0], markers.y[0]), (markers.x[1], markers.y[1])), 0.9)
+
+    def test_estimated_landing_positions_drive_zones_and_draw_caster_arrows(self):
+        shape = {
+            "density": [[0.0, 1.0], [1.0, 0.0]], "x": [0.0, 10.0], "y": [0.0, 10.0],
+            "x_min": 0.0, "x_max": 10.0, "y_min": 0.0, "y_max": 10.0, "bins": 2,
+        }
+        casts = pd.DataFrame([{
+            "x": 1.0, "y": 1.0, "landing_x": 8.0, "landing_y": 7.0,
+            "caster_x": 1.0, "caster_y": 1.0, "estimated": True,
+        }])
+
+        landing_casts = _casts_for_position(casts, "Estimated landing")
+        figure = _map_figure(
+            shape, landing_casts, pd.DataFrame(), True, "Lotus", {}, "Estimated landing",
+        )
+
+        self.assertEqual((landing_casts.loc[0, "x"], landing_casts.loc[0, "y"]), (8.0, 7.0))
+        self.assertEqual((casts.loc[0, "x"], casts.loc[0, "y"]), (1.0, 1.0))
+        self.assertEqual(len(figure.layout.annotations), 1)
+        self.assertEqual((figure.layout.annotations[0].ax, figure.layout.annotations[0].ay), (1.0, 1.0))
+        self.assertEqual((figure.layout.annotations[0].x, figure.layout.annotations[0].y), (8.0, 7.0))
 
     def test_category_counts_and_switch_target(self):
         casts = pd.DataFrame({"category": ["smoke", "smoke", "recon", "placeable"]})
@@ -170,6 +192,7 @@ class UtilityMapAppTests(unittest.TestCase):
         self.assertEqual(state["shared_side"], "defense")
         self.assertEqual(state["ability_category"], "placeable")
         self.assertEqual(state["utility_agent_widget_team-a"], "cypher")
+        self.assertEqual(state["utility_position_team-a_placeable"], "Caster")
 
 
 if __name__ == "__main__":
