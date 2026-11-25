@@ -19,6 +19,8 @@ class MapShapeTests(unittest.TestCase):
             second = load_map_shapes(casts, kills, directory, bins=8)
             self.assertEqual(first["Lotus"]["position_count"], 4)
             self.assertEqual(first["Lotus"]["density"].shape, (8, 8))
+            self.assertGreater(np.count_nonzero(first["Lotus"]["density"]), 4)
+            self.assertAlmostEqual(float(first["Lotus"]["density"].max()), 1.0)
             np.testing.assert_array_equal(first["Lotus"]["density"], second["Lotus"]["density"])
             self.assertTrue((Path(directory) / "map_shapes.npz").is_file())
 

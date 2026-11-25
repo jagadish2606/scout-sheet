@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from analysis.extract import extract_series
+from analysis.extract import _event_game_id, extract_series
 from build_cache import select_series_ids
 
 
@@ -55,6 +55,33 @@ def _meta_game(series_id, game_id, session="1", valid="True", map_name="ascent")
     }
 
 
+class EventGameResolutionTests(unittest.TestCase):
+    def test_active_game_takes_precedence_over_earlier_state_snapshot(self):
+        event = {"seriesState": {"games": [{"id": "old-game"}, {"id": "active-game"}]}}
+        self.assertEqual(
+            _event_game_id(event, {"old-game", "active-game"}, "active-game"),
+            "active-game",
+        )
+
+    def test_explicit_game_target_takes_precedence_over_active_game(self):
+        event = {
+            "target": {"id": "target-game", "type": "game"},
+            "seriesState": {"games": [{"id": "old-game"}]},
+        }
+        self.assertEqual(
+            _event_game_id(event, {"old-game", "target-game"}, "old-game"),
+            "target-game",
+        )
+
+    def test_explicit_unknown_game_is_not_replaced_by_active_game(self):
+        event = {"target": {"id": "rolled-game", "type": "game"}}
+        self.assertEqual(_event_game_id(event, {"old-game"}, "old-game"), "rolled-game")
+
+    def test_unknown_active_game_is_not_replaced_by_snapshot_game(self):
+        event = {"seriesState": {"games": [{"id": "old-game"}]}}
+        self.assertEqual(_event_game_id(event, {"old-game"}, "rolled-game"), "rolled-game")
+
+
 class ExtractSeriesTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -84,6 +111,7 @@ class ExtractSeriesTests(unittest.TestCase):
         game1 = _game("game-1", 1, start, "defender", "ascent")
         game2 = _game("game-2", 1, "2025-01-01T00:10:00Z", "attacker", "lotus")
         rolled_game = _game("rolled-game", 1, "2025-01-01T00:20:00Z", "defender", "bind")
+        unknown_rolled_game = _game("unknown-rolled-game", 1, "2025-01-01T00:05:00Z", "defender", "bind")
         invalid_game = _game("invalid-game", 1, "2025-01-01T00:30:00Z", "defender", "sunset")
         ability_event = {
             "id": "cast-gap", "type": "player-used-ability",
@@ -128,15 +156,48 @@ class ExtractSeriesTests(unittest.TestCase):
             "type": "round-ended-freezetime", "includesFullState": True,
             "seriesState": {"games": [game1]},
         }
+        plant_event = {
+            "id": "plant-1", "type": "player-completed-plantBomb",
+            "actor": {"id": "game-1-p1", "state": {
+                "id": "game-1-p1", "name": "Player One", "teamId": "team-a", "side": "defender",
+                "game": {"position": {"x": 700, "y": 800}},
+            }},
+            "target": {"id": "plantBomb", "type": "plantBomb"},
+            "seriesState": {"games": [{"id": "game-1"}]},
+        }
+        missing_live_time_cast = {
+            "id": "cast-no-freeze-time", "type": "player-used-ability",
+            "actor": {"id": "game-2-p1", "state": {
+                "id": "game-2-p1", "name": "Player One", "teamId": "team-a", "side": "attacker",
+                "game": {"position": {"x": 400, "y": 500}},
+            }},
+            "target": {"id": "dash", "state": {"id": "dash", "name": "dash"}},
+            "seriesState": {"games": [{"id": "game-2"}]},
+        }
+        unknown_rolled_cast = {
+            "id": "cast-rolled-game", "type": "player-used-ability",
+            "actor": {"id": "unknown-rolled-game-p1", "state": {
+                "id": "unknown-rolled-game-p1", "name": "Player One", "teamId": "team-a",
+                "game": {"position": {"x": 900, "y": 900}},
+            }},
+            "target": {"id": "dash", "state": {"id": "dash", "name": "dash"}},
+            "seriesState": {"games": [{"id": "game-1"}, {"id": "unknown-rolled-game"}]},
+        }
         envelopes = [
             _envelope({"type": "grid-started-feed"}),
             _envelope(_round_started(game1), start),
             _envelope(ability_event, "2025-01-01T00:00:10Z"),
             _envelope(missing_supplement_cast, "2025-01-01T00:00:11Z"),
             _envelope(kill_event, "2025-01-01T00:00:12Z"),
+            _envelope(plant_event, "2025-01-01T00:00:13Z"),
             _envelope(won_event, "2025-01-01T00:00:15Z"),
             _envelope(freeze_event, "2025-01-01T00:00:20Z"),
+            _envelope({"type": "series-started-game", "target": {"id": "unknown-rolled-game", "type": "game"}}),
+            _envelope(_round_started(unknown_rolled_game), "2025-01-01T00:05:00Z"),
+            _envelope(unknown_rolled_cast, "2025-01-01T00:05:10Z"),
+            _envelope({"type": "series-!started-game", "target": {"id": "unknown-rolled-game", "type": "game"}}),
             _envelope(_round_started(game2), "2025-01-01T00:10:00Z"),
+            _envelope(missing_live_time_cast, "2025-01-01T00:10:30Z"),
             _envelope(_round_started(rolled_game), "2025-01-01T00:20:00Z"),
             _envelope({"type": "series-!started-game", "target": {"id": "rolled-game", "type": "game"}}),
             _envelope({"type": "grid-started-feed"}),
@@ -165,14 +226,19 @@ class ExtractSeriesTests(unittest.TestCase):
         self.assertEqual(rounds[rounds["game_id"] == "game-1"]["won_round"].tolist(), [False, True])
 
         casts = tables["casts"]
-        self.assertEqual(len(casts), 2)
+        self.assertEqual(len(casts), 3)
         self.assertEqual(casts.iloc[0]["x"], 10)
         self.assertEqual(casts.iloc[0]["quality"], "gap_exceeded")
+        self.assertEqual(casts["seconds_into_round"].tolist()[:2], [-10.0, -9.0])
         self.assertTrue(casts.iloc[1]["x"] != casts.iloc[1]["x"])  # nullable supplement data
+        self.assertTrue(casts.iloc[2]["seconds_into_round"] != casts.iloc[2]["seconds_into_round"])
 
         kill = tables["kills"].iloc[0]
         self.assertEqual(kill["weapon"], "operator")
+        self.assertEqual(kill["seconds_into_round"], -8.0)
         self.assertEqual((kill["killer_x"], kill["killer_y"], kill["victim_x"], kill["victim_y"]), (100, 200, 300, 400))
+        plant = tables["plants"].iloc[0]
+        self.assertEqual((plant["x"], plant["y"], plant["team_id"]), (700, 800, "team-a"))
         buy = tables["buys"].iloc[0]
         self.assertEqual(buy["primary_weapon"], "operator")
         self.assertTrue(buy["has_operator"])

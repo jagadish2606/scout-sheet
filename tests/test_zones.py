@@ -2,7 +2,7 @@ import unittest
 
 import pandas as pd
 
-from analysis.zones import calculate_zone_percentage
+from analysis.zones import calculate_zone_percentage, filter_casts
 
 
 class ZonePercentageTests(unittest.TestCase):
@@ -56,6 +56,40 @@ class ZonePercentageTests(unittest.TestCase):
     def test_no_matching_rounds_returns_no_zone(self):
         zones = calculate_zone_percentage(self.rounds, self.casts, "missing", "Lotus", "defender")
         self.assertTrue(zones.empty)
+
+    def test_remote_casts_are_excluded_by_default(self):
+        casts = pd.concat([
+            self.casts.iloc[:1],
+            pd.DataFrame([self._cast(
+                "s1", "g1", 1, 200, 300, "Player One", ability="stars",
+            ) | {"agent": "astra"}]),
+        ], ignore_index=True)
+        selected = filter_casts(casts, category="all", seconds_range=(-30, 30))
+        self.assertEqual(selected["ability"].tolist(), ["trapwire"])
+        included = filter_casts(
+            casts, category="all", seconds_range=(-30, 30), include_remote=True,
+        )
+        self.assertEqual(included["ability"].tolist(), ["trapwire", "stars"])
+
+    def test_buy_phase_can_be_included_independently_of_live_window(self):
+        casts = self.casts.iloc[:3].copy()
+        casts["seconds_into_round"] = [-20.0, 10.0, 120.0]
+        selected = filter_casts(casts, seconds_range=(0, 30), include_buy_phase=True)
+        self.assertEqual(selected["seconds_into_round"].tolist(), [-20.0, 10.0])
+        selected = filter_casts(casts, seconds_range=(0, 30), include_buy_phase=False)
+        self.assertEqual(selected["seconds_into_round"].tolist(), [10.0])
+        self.assertTrue(filter_casts(casts.iloc[:0]).empty)
+
+    def test_representative_cast_is_a_real_ability_agent_player_combination(self):
+        casts = pd.DataFrame([
+            self._cast("s1", "g1", 1, 100, 200, "Player One"),
+            self._cast("s1", "g1", 2, 100, 200, "Player One", "spycam"),
+            self._cast("s1", "g2", 1, 100, 200, "Player Two", "spycam"),
+            self._cast("s1", "g2", 1, 100, 200, "Player Two", "spycam"),
+        ])
+        zone = calculate_zone_percentage(self.rounds, casts, "team-a", "Lotus", "defender").iloc[0]
+        self.assertEqual((zone["ability"], zone["agent"], zone["player_name"]), ("spycam", "cypher", "Player Two"))
+        self.assertEqual(zone["rounds_used"], 3)
 
 
 if __name__ == "__main__":

@@ -29,6 +29,10 @@ TABLE_COLUMNS = {
         "series_id", "game_id", "map", "round_number", "player_id", "player_name",
         "team_id", "side", "agent", "primary_weapon", "has_operator",
     ],
+    "plants": [
+        "series_id", "game_id", "map", "round_number", "planter_id", "team_id",
+        "team_name", "x", "y",
+    ],
 }
 
 PRIMARY_WEAPONS = {
@@ -157,10 +161,23 @@ def _event_game_candidates(event):
 
 
 def _event_game_id(event, known_game_ids, active_game_id=None):
+    direct_candidates = [
+        str(entity["id"])
+        for name in ("actor", "target")
+        if (entity := event.get(name) or {}).get("id") is not None
+        and str(entity.get("type", "")).lower() in {"game", "esports"}
+    ]
+    for candidate in direct_candidates:
+        if candidate in known_game_ids:
+            return candidate
+    if direct_candidates:
+        return direct_candidates[0]
+    if active_game_id is not None:
+        return active_game_id
     for candidate in _event_game_candidates(event):
         if candidate in known_game_ids:
             return candidate
-    return active_game_id
+    return None
 
 
 def _rollback_game_id(event):
@@ -313,7 +330,7 @@ def extract_series(series_id, data_dir=DATA_DIR):
     game_context = {}
     players = {}
     active_rounds = {}
-    round_started_at = {}
+    round_live_at = {}
     round_indices = defaultdict(list)
     round_row_indices = {}
     weapon_counts = {}
@@ -347,10 +364,12 @@ def extract_series(series_id, data_dir=DATA_DIR):
             game_id = _event_game_id(
                 event, game_metadata, active_game_by_session.get(session_number),
             )
-            if game_id is None or game_id not in valid_game_ids:
+            if game_id is None:
                 continue
-            active_game_by_session[session_number] = game_id
             game_id = str(game_id)
+            active_game_by_session[session_number] = game_id
+            if game_id not in valid_game_ids:
+                continue
             state = event.get("seriesState") or {}
             _update_game_context(state, game_context, players)
             _update_game_context(event.get("seriesStateDelta") or {}, game_context, players)
@@ -385,7 +404,6 @@ def extract_series(series_id, data_dir=DATA_DIR):
                     or occurred_at
                 )
                 active_rounds[game_id] = round_number
-                round_started_at[(game_id, round_number)] = started_at
                 if game_state:
                     context = game_context.setdefault(game_id, {"map": None, "teams": {}})
                     for team in game_state.get("teams", []) or []:
@@ -429,6 +447,8 @@ def extract_series(series_id, data_dir=DATA_DIR):
                 continue
 
             if event_type == "round-ended-freezetime":
+                if round_number is not None and occurred_at is not None:
+                    round_live_at[(game_id, round_number)] = occurred_at
                 if not event.get("includesFullState"):
                     continue
                 for game in state.get("games", []) or []:
@@ -479,7 +499,7 @@ def extract_series(series_id, data_dir=DATA_DIR):
                     "game_id": game_id,
                     "map": _game_map(game_context, game_id, game_metadata),
                     "round_number": round_number,
-                    "seconds_into_round": _elapsed_seconds(round_started_at.get((game_id, round_number)), occurred_at),
+                    "_occurred_at": occurred_at,
                     "player_id": player_id,
                     "player_name": player.get("player_name"),
                     "team_id": player.get("team_id"),
@@ -492,6 +512,25 @@ def extract_series(series_id, data_dir=DATA_DIR):
                     "quality": (supplement or {}).get("quality"),
                 }
                 rows["casts"].append(row)
+                continue
+
+            if event_type == "player-completed-plantBomb":
+                actor = event.get("actor") or {}
+                planter_id, planter = _player_fields(actor, game_id, game_context.get(game_id, {}), players)
+                actor_state = _event_player_state(actor)
+                game_state = actor_state.get("game") or {}
+                position = game_state.get("position") or actor_state.get("position") or {}
+                rows["plants"].append({
+                    "series_id": series_id,
+                    "game_id": game_id,
+                    "map": _game_map(game_context, game_id, game_metadata),
+                    "round_number": round_number,
+                    "planter_id": planter_id,
+                    "team_id": planter.get("team_id"),
+                    "team_name": planter.get("team_name"),
+                    "x": position.get("x"),
+                    "y": position.get("y"),
+                })
                 continue
 
             if event_type == "player-killed-player":
@@ -508,7 +547,7 @@ def extract_series(series_id, data_dir=DATA_DIR):
                     "game_id": game_id,
                     "map": _game_map(game_context, game_id, game_metadata),
                     "round_number": round_number,
-                    "seconds_into_round": _elapsed_seconds(round_started_at.get((game_id, round_number)), occurred_at),
+                    "_occurred_at": occurred_at,
                     "killer_id": killer_id,
                     "killer_name": killer.get("player_name"),
                     "killer_team_id": killer.get("team_id"),
@@ -527,6 +566,13 @@ def extract_series(series_id, data_dir=DATA_DIR):
                     "victim_x": victim_position.get("x"),
                     "victim_y": victim_position.get("y"),
                 })
+
+    for table_name in ("casts", "kills"):
+        for row in rows[table_name]:
+            row["seconds_into_round"] = _elapsed_seconds(
+                round_live_at.get((str(row["game_id"]), row["round_number"])),
+                row.pop("_occurred_at", None),
+            )
 
     result = {}
     for name, columns in TABLE_COLUMNS.items():

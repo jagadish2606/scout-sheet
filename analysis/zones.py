@@ -4,7 +4,7 @@ import math
 
 import pandas as pd
 
-from analysis.abilities import ability_category, ability_display_name
+from analysis.abilities import ability_category, ability_display_name, ability_is_remote_cast
 
 
 ROUND_KEYS = ["series_id", "game_id", "round_number"]
@@ -51,11 +51,23 @@ def match_casts_to_rounds(casts, rounds_for_team):
     return joined.loc[joined["_merge"].eq("both")].drop(columns="_merge").copy(), unmatched
 
 
-def filter_casts(casts, category=None, player_id=None, agent=None, seconds_range=(0, 100)):
+def filter_casts(
+    casts, category=None, player_id=None, agent=None, seconds_range=(0, 100), include_remote=False,
+    include_buy_phase=False,
+):
     """Apply cast-only filters; these do not change the round denominator."""
     selected = casts.copy()
-    selected["category"] = selected["ability"].map(ability_category)
+    selected["category"] = [
+        ability_category(ability, cast_agent)
+        for ability, cast_agent in zip(selected["ability"], selected["agent"])
+    ]
     selected["ability_name"] = selected["ability"].map(ability_display_name)
+    selected["remote_cast"] = pd.Series([
+        ability_is_remote_cast(ability, cast_agent)
+        for ability, cast_agent in zip(selected["ability"], selected["agent"])
+    ], index=selected.index, dtype=bool)
+    if not include_remote:
+        selected = selected[~selected["remote_cast"]]
     if category and category != "all":
         selected = selected[selected["category"].eq(category)]
     if player_id and player_id != "all":
@@ -64,7 +76,10 @@ def filter_casts(casts, category=None, player_id=None, agent=None, seconds_range
         selected = selected[selected["agent"].astype(str).str.casefold().eq(str(agent).casefold())]
     start, end = seconds_range
     times = pd.to_numeric(selected["seconds_into_round"], errors="coerce")
-    selected = selected[times.between(start, end, inclusive="both")].copy()
+    time_matches = times.between(start, end, inclusive="both")
+    if include_buy_phase:
+        time_matches |= times.lt(0)
+    selected = selected[time_matches].copy()
     selected["seconds_into_round"] = times.loc[selected.index]
     return selected
 
@@ -87,7 +102,10 @@ def aggregate_zone_cells(casts, denominator_rounds, cell_size=400):
     rows = []
     for (cell_x, cell_y), group in valid.groupby(["cell_x", "cell_y"], sort=False):
         rounds_used = int(group["round_key"].nunique())
-        ability = _mode(group["ability"])
+        representative = group.groupby(
+            ["ability", "agent", "player_name"], dropna=False,
+        ).size().sort_values(ascending=False, kind="stable").index[0]
+        ability, agent, player_name = ("Unknown" if pd.isna(value) else str(value) for value in representative)
         rows.append({
             "cell_x": int(cell_x),
             "cell_y": int(cell_y),
@@ -99,21 +117,13 @@ def aggregate_zone_cells(casts, denominator_rounds, cell_size=400):
             "series_count": int(group["series_id"].nunique()),
             "ability": ability,
             "ability_name": ability_display_name(ability),
-            "agent": _mode(group["agent"]),
-            "player_name": _mode(group["player_name"]),
+            "agent": agent,
+            "player_name": player_name,
             "casts": int(len(group)),
         })
     return pd.DataFrame(rows, columns=ZONE_COLUMNS).sort_values(
         ["rounds_used", "casts", "cell_x", "cell_y"], ascending=[False, False, True, True],
     ).reset_index(drop=True)
-
-
-def _mode(values):
-    non_null = values.dropna().astype(str)
-    if non_null.empty:
-        return "Unknown"
-    counts = non_null.value_counts()
-    return str(counts.index[0])
 
 
 def calculate_zone_percentage(
@@ -130,6 +140,8 @@ def calculate_zone_percentage(
 ):
     """Calculate per-zone distinct-round use and its fixed team/map/side denominator."""
     denominator = eligible_rounds(rounds, team_id, map_name, side)
+    if denominator.empty:
+        return pd.DataFrame(columns=ZONE_COLUMNS)
     matched, _ = match_casts_to_rounds(casts, denominator)
     filtered = filter_casts(matched, category, player_id, agent, seconds_range)
     return aggregate_zone_cells(filtered, denominator, cell_size)

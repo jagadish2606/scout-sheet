@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from analysis.extract import TABLE_COLUMNS, extract_series
+from analysis.sites import load_site_centres
 from config import DATA_DIR
 
 
@@ -15,6 +16,7 @@ SAMPLE_COLUMNS = {
     "casts": ["series_id", "game_id", "map", "round_number", "seconds_into_round", "player_name", "team_name", "agent", "ability", "slot", "x", "y", "quality"],
     "kills": ["series_id", "game_id", "map", "round_number", "seconds_into_round", "killer_name", "killer_team_name", "killer_side", "victim_name", "victim_team_name", "victim_side", "weapon", "killer_x", "killer_y", "victim_x", "victim_y"],
     "buys": ["series_id", "game_id", "map", "round_number", "player_name", "team_id", "side", "agent", "primary_weapon", "has_operator"],
+    "plants": ["series_id", "game_id", "map", "round_number", "planter_id", "team_name", "x", "y"],
 }
 
 
@@ -98,6 +100,8 @@ def build_cache(series_ids=None, limit=None, data_dir=DATA_DIR, cache_dir=None, 
             sample_columns = [column for column in SAMPLE_COLUMNS[table_name] if column in frame]
             print(f"Sample {table_name} (first {min(sample_rows, len(frame))} rows):")
             print(frame[sample_columns].head(sample_rows).to_string(index=False, max_colwidth=22))
+    site_centres = load_site_centres(final["plants"], cache_dir)
+    print(f"Site centres: {sum(len(sites) for sites in site_centres.values()):,} across {len(site_centres):,} maps")
     return final
 
 

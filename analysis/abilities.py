@@ -7,25 +7,22 @@ CATEGORIES = ("placeable", "recon", "smoke", "stall/wall", "flash", "movement", 
 
 _CATEGORY_BY_ABILITY = {}
 for _category, _abilities in {
-    "placeable": {
-        "alarmbot", "arc-rose", "cyber-cage", "lockdown", "nanoswarm", "razorvine",
-        "shear", "sonic-sensor", "spycam", "stars", "trademark", "trapwire", "turret",
-    },
     "recon": {
         "boom-bot", "haunt", "hunter's-fury", "neural-theft", "nightfall", "owl-drone",
         "prowler", "recon-bolt", "seekers", "stealth-drone", "trailblazer", "zero-point",
     },
     "smoke": {
         "cloudburst", "cove", "dark-cover", "nebula-dissipate", "poison-cloud", "ruse",
-        "sky-smoke", "toxic-screen", "viper's-pit",
+        "sky-smoke", "stars", "toxic-screen", "viper's-pit",
     },
     "stall/wall": {
         "aftershock", "annihilation", "armageddon", "barrier-mesh", "barrier-orb", "blaze",
         "cascade", "contingency", "fault-line", "fast-lane", "frag-ment", "gravnet",
         "gravity-well", "guided-salvo", "high-tide", "hot-hands", "incendiary", "meddle",
-        "mosh-pit", "nova-pulse", "orbital-strike", "paint-shells", "reckoning", "relay-bolt",
-        "rolling-thunder", "seize", "shock-bolt", "slow-orb", "snake-bite", "special-delivery",
-        "storm-surge", "steel-garden", "saturate", "thrash", "undercut", "wingman",
+        "lockdown", "mosh-pit", "nova-pulse", "orbital-strike", "paint-shells", "reckoning",
+        "relay-bolt", "rolling-thunder", "seize", "shock-bolt", "slow-orb", "snake-bite",
+        "special-delivery", "storm-surge", "steel-garden", "saturate", "thrash", "undercut",
+        "wingman",
     },
     "flash": {
         "blindside", "curveball", "dizzy", "flash-drive", "flashpoint", "guiding-light",
@@ -40,6 +37,21 @@ for _category, _abilities in {
     for _ability in _abilities:
         _CATEGORY_BY_ABILITY[_ability] = _category
 
+_PLACEABLE_BY_AGENT = {
+    "cypher": {"spycam", "trapwire"},
+    "killjoy": {"alarmbot", "nanoswarm", "turret"},
+    "chamber": {"trademark"},
+    "vyse": {"arc-rose", "razorvine", "shear"},
+    "deadlock": {"sonic-sensor"},
+}
+
+_REMOTE_CAST_BY_AGENT = {
+    "astra": {"stars", "nebula-dissipate", "gravity-well", "nova-pulse"},
+    "brimstone": {"sky-smoke", "orbital-strike"},
+    "clove": {"ruse"},
+    "omen": {"dark-cover"},
+}
+
 _DISPLAY_NAMES = {
     "frag-ment": "FRAG/ment",
     "null-cmd": "NULL/cmd",
@@ -51,11 +63,30 @@ _DISPLAY_NAMES = {
 }
 
 
-def ability_category(ability):
-    """Return a category for an ability ID, using ``other`` for unknown IDs."""
+def _normalize(value):
+    if value is None or pd.isna(value):
+        return ""
+    return str(value).strip().lower().replace("_", "-")
+
+
+def ability_category(ability, agent=None):
+    """Return the agent-aware category for an ability ID."""
     if ability is None or pd.isna(ability):
         return "other"
-    return _CATEGORY_BY_ABILITY.get(str(ability).strip().lower(), "other")
+    ability = _normalize(ability)
+    agent = _normalize(agent)
+    if ability in _PLACEABLE_BY_AGENT.get(agent, set()):
+        return "placeable"
+    if ability == "cyber-cage":
+        return "smoke"
+    return _CATEGORY_BY_ABILITY.get(ability, "other")
+
+
+def ability_is_remote_cast(ability, agent=None):
+    """Return whether the caster's location is a poor proxy for utility location."""
+    ability = _normalize(ability)
+    agent = _normalize(agent)
+    return ability in _REMOTE_CAST_BY_AGENT.get(agent, set())
 
 
 def ability_display_name(ability):
@@ -73,8 +104,14 @@ def ability_mapping(casts):
     observed = casts[["agent", "ability"]].drop_duplicates().copy()
     observed["agent"] = observed["agent"].fillna("Unknown agent")
     observed["ability"] = observed["ability"].fillna("unknown")
-    observed["category"] = observed["ability"].map(ability_category)
+    observed["category"] = [
+        ability_category(ability, agent) for agent, ability in zip(observed["agent"], observed["ability"])
+    ]
     observed["display_name"] = observed["ability"].map(ability_display_name)
+    observed["remote_cast"] = [
+        ability_is_remote_cast(ability, agent)
+        for agent, ability in zip(observed["agent"], observed["ability"])
+    ]
 
     agents_per_ability = observed.groupby("ability")["agent"].transform("nunique")
     observed["agent_pair_flag"] = agents_per_ability.gt(1).map(
