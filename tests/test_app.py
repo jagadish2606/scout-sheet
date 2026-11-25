@@ -2,14 +2,17 @@ import math
 import unittest
 from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
 
 from analysis.abilities import CATEGORIES
+from analysis.landing import build_walkable_mask
 from analysis.text import team_possessive
 from app import (
     _category_counts,
     _map_figure,
     _casts_for_position,
+    _casts_for_arrow_zone,
     _most_common_category,
     _operator_headline,
     _operator_strip_figure,
@@ -50,9 +53,61 @@ class UtilityMapAppTests(unittest.TestCase):
         self.assertEqual(figure.layout.height, 650)
         self.assertEqual(list(figure.layout.xaxis.range), [-0.5, 10.5])
         self.assertEqual(list(figure.layout.yaxis.range), [-0.5, 10.5])
+        self.assertEqual(figure.layout.xaxis.constrain, "domain")
+        self.assertEqual(figure.layout.yaxis.constrain, "domain")
+        self.assertEqual(figure.layout.yaxis.scaleanchor, "x")
         self.assertEqual(list(markers.text), ["1", "2"])
         self.assertNotIn("site_label", str(markers.customdata))
         self.assertGreaterEqual(math.dist((markers.x[0], markers.y[0]), (markers.x[1], markers.y[1])), 0.9)
+
+    def test_zone_markers_are_offset_from_site_letters(self):
+        shape = {"x_min": 0.0, "x_max": 1000.0, "y_min": 0.0, "y_max": 1000.0}
+        zones = pd.DataFrame([{"x": 500.0, "y": 500.0}])
+        sites = {"B": {"x": 500.0, "y": 500.0}}
+
+        marker_x, marker_y = _separate_zone_markers(zones, shape, sites)
+
+        self.assertGreater(math.dist((marker_x[0], marker_y[0]), (500.0, 500.0)), 100.0)
+        self.assertGreaterEqual(marker_x[0], -50.0)
+        self.assertLessEqual(marker_x[0], 1050.0)
+        self.assertGreaterEqual(marker_y[0], -50.0)
+        self.assertLessEqual(marker_y[0], 1050.0)
+
+    def test_padded_axes_contain_all_walkable_cells_for_reference_map_extents(self):
+        extents = {
+            "Lotus": (-2000.0, 12000.0, -6000.0, 7000.0),
+            "Ascent": (-12000.0, 12000.0, -14000.0, 6000.0),
+            "Haven": (-14000.0, 14000.0, -14000.0, 5000.0),
+        }
+        for map_name, (x_min, x_max, y_min, y_max) in extents.items():
+            with self.subTest(map_name=map_name):
+                shape = {
+                    "density": [[0.1] * 5 for _ in range(5)],
+                    "x": np.linspace(x_min, x_max, 5), "y": np.linspace(y_min, y_max, 5),
+                    "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max,
+                }
+                mask = build_walkable_mask(shape)
+                x_grid, y_grid = np.meshgrid(shape["x"], shape["y"])
+                x_range = _padded_axis_range(shape, "x")
+                y_range = _padded_axis_range(shape, "y")
+
+                self.assertTrue(np.all((x_grid[mask] >= x_range[0]) & (x_grid[mask] <= x_range[1])))
+                self.assertTrue(np.all((y_grid[mask] >= y_range[0]) & (y_grid[mask] <= y_range[1])))
+
+    def test_filtered_heat_is_clipped_to_the_walkable_mask(self):
+        density = np.zeros((5, 5), dtype=float)
+        density[2, 2] = 1.0
+        shape = {
+            "density": density, "x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float),
+            "x_min": 0.0, "x_max": 4.0, "y_min": 0.0, "y_max": 4.0, "bins": 5,
+        }
+        casts = pd.DataFrame([{"x": 4.0, "y": 4.0}])
+
+        figure = _map_figure(shape, casts, pd.DataFrame(), False, "Lotus", {})
+        walkable = build_walkable_mask(shape)
+        heat = np.asarray(figure.data[1].z, dtype=float)
+
+        self.assertTrue(np.isnan(heat[~walkable]).all())
 
     def test_estimated_landing_positions_drive_zones_and_draw_caster_arrows(self):
         shape = {
@@ -62,11 +117,19 @@ class UtilityMapAppTests(unittest.TestCase):
         casts = pd.DataFrame([{
             "x": 1.0, "y": 1.0, "landing_x": 8.0, "landing_y": 7.0,
             "caster_x": 1.0, "caster_y": 1.0, "estimated": True,
+        }, {
+            "x": 405.0, "y": 1.0, "landing_x": 405.0, "landing_y": 2.0,
+            "caster_x": 400.0, "caster_y": 1.0, "estimated": True,
+        }])
+        zones = pd.DataFrame([{
+            "cell_x": 0, "cell_y": 0, "x": 200.0, "y": 200.0,
+            "site_label": "A site", "ability_name": "Ability", "rounds_used": 1,
+            "total_rounds": 1, "percentage": 100.0,
         }])
 
         landing_casts = _casts_for_position(casts, "Estimated landing")
         figure = _map_figure(
-            shape, landing_casts, pd.DataFrame(), True, "Lotus", {}, "Estimated landing",
+            shape, landing_casts, zones, True, "Lotus", {}, "Estimated landing", arrow_zone=1,
         )
 
         self.assertEqual((landing_casts.loc[0, "x"], landing_casts.loc[0, "y"]), (8.0, 7.0))
@@ -74,6 +137,23 @@ class UtilityMapAppTests(unittest.TestCase):
         self.assertEqual(len(figure.layout.annotations), 1)
         self.assertEqual((figure.layout.annotations[0].ax, figure.layout.annotations[0].ay), (1.0, 1.0))
         self.assertEqual((figure.layout.annotations[0].x, figure.layout.annotations[0].y), (8.0, 7.0))
+
+    def test_arrow_zone_selection_and_fallback_sample_are_bounded(self):
+        casts = pd.DataFrame([
+            {
+                "x": float(index * 400 + 1), "y": 1.0, "caster_x": float(index * 400),
+                "caster_y": 1.0, "estimated": True,
+            }
+            for index in range(100)
+        ])
+        zones = pd.DataFrame([{"cell_x": 3, "cell_y": 0}])
+
+        selected = _casts_for_arrow_zone(casts, zones, selected_zone=1)
+        sample = _casts_for_arrow_zone(casts, zones, selected_zone=None)
+
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(math.floor(selected.iloc[0]["x"] / 400), 3)
+        self.assertEqual(len(sample), 80)
 
     def test_category_counts_and_switch_target(self):
         casts = pd.DataFrame({"category": ["smoke", "smoke", "recon", "placeable"]})

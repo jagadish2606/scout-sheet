@@ -8,43 +8,45 @@ import pandas as pd
 from analysis.abilities import ability_category, ability_is_remote_cast
 
 
-WALL_PLACEMENTS = {
-    ("cypher", "trapwire"): 1800.0,
-    ("chamber", "trademark"): 1800.0,
-    ("deadlock", "sonic-sensor"): 1800.0,
-    ("vyse", "arc-rose"): 1800.0,
-    ("vyse", "shear"): 1800.0,
+SHORT_PLACEMENTS = {
+    ("killjoy", "alarmbot"),
+    ("killjoy", "nanoswarm"),
+    ("killjoy", "turret"),
+    ("chamber", "trademark"),
+    ("deadlock", "sonic-sensor"),
+    ("vyse", "shear"),
 }
+# The supplement does not identify a long-throw nanoswarm cast, so all are treated as short placement.
+SHORT_PLACEMENT_RANGE = 500.0
+WALL_PLACEMENTS = {("cypher", "trapwire"): 800.0}
 
 # (base range, minimum range, maximum range), in GRID map units.
 THROWN_RANGES = {
-    ("cypher", "spycam"): (5200.0, 1800.0, 7200.0),
-    ("killjoy", "alarmbot"): (4200.0, 1600.0, 6000.0),
-    ("killjoy", "nanoswarm"): (4800.0, 1600.0, 6800.0),
-    ("vyse", "razorvine"): (4400.0, 1600.0, 6200.0),
-    ("brimstone", "incendiary"): (5600.0, 2000.0, 7600.0),
-    ("phoenix", "hot-hands"): (4700.0, 1600.0, 6400.0),
-    ("viper", "snake-bite"): (5600.0, 2000.0, 7600.0),
-    ("generic", "cloudburst"): (4200.0, 1600.0, 6000.0),
-    ("generic", "poison-cloud"): (5200.0, 1800.0, 7000.0),
-    ("generic", "mosh-pit"): (6000.0, 2200.0, 8000.0),
-    ("generic", "snake-bite"): (5600.0, 2000.0, 7600.0),
-    ("generic", "incendiary"): (5600.0, 2000.0, 7600.0),
-    ("generic", "hot-hands"): (4700.0, 1600.0, 6400.0),
-    ("generic", "paint-shells"): (5000.0, 1800.0, 7000.0),
-    ("generic", "frag-ment"): (5000.0, 1800.0, 7000.0),
-    ("generic", "special-delivery"): (4400.0, 1600.0, 6200.0),
-    ("generic", "blindside"): (4800.0, 1600.0, 6600.0),
-    ("generic", "curveball"): (4000.0, 1400.0, 5600.0),
-    ("generic", "guiding-light"): (5000.0, 1800.0, 7000.0),
-    ("generic", "flash-drive"): (5200.0, 1800.0, 7200.0),
-    ("generic", "recon-bolt"): (5600.0, 2000.0, 7600.0),
-    ("generic", "shock-bolt"): (5600.0, 2000.0, 7600.0),
-    ("generic", "relay-bolt"): (5000.0, 1800.0, 7000.0),
-    ("generic", "cove"): (4800.0, 1600.0, 6600.0),
-    ("generic", "razorvine"): (4400.0, 1600.0, 6200.0),
-    ("generic", "nanoswarm"): (4800.0, 1600.0, 6800.0),
-    ("generic", "spycam"): (5200.0, 1800.0, 7200.0),
+    ("cypher", "spycam"): (3800.0, 1400.0, 4800.0),
+    ("vyse", "arc-rose"): (3000.0, 1000.0, 3800.0),
+    ("vyse", "razorvine"): (3400.0, 1200.0, 4200.0),
+    ("brimstone", "incendiary"): (5000.0, 1800.0, 6200.0),
+    ("phoenix", "hot-hands"): (4200.0, 1400.0, 5200.0),
+    ("viper", "snake-bite"): (5000.0, 1800.0, 6200.0),
+    ("generic", "cloudburst"): (3500.0, 1200.0, 4400.0),
+    ("generic", "poison-cloud"): (4400.0, 1500.0, 5500.0),
+    ("generic", "mosh-pit"): (5000.0, 1800.0, 6200.0),
+    ("generic", "snake-bite"): (5000.0, 1800.0, 6200.0),
+    ("generic", "incendiary"): (5000.0, 1800.0, 6200.0),
+    ("generic", "hot-hands"): (4200.0, 1400.0, 5200.0),
+    ("generic", "paint-shells"): (4500.0, 1600.0, 5600.0),
+    ("generic", "frag-ment"): (4500.0, 1600.0, 5600.0),
+    ("generic", "special-delivery"): (3500.0, 1200.0, 4400.0),
+    ("generic", "blindside"): (3500.0, 1200.0, 4400.0),
+    ("generic", "curveball"): (3000.0, 1000.0, 3800.0),
+    ("generic", "guiding-light"): (4200.0, 1500.0, 5200.0),
+    ("generic", "flash-drive"): (4400.0, 1500.0, 5500.0),
+    ("generic", "recon-bolt"): (5000.0, 1800.0, 6200.0),
+    ("generic", "shock-bolt"): (5000.0, 1800.0, 6200.0),
+    ("generic", "relay-bolt"): (4500.0, 1500.0, 5600.0),
+    ("generic", "cove"): (4000.0, 1400.0, 5000.0),
+    ("generic", "razorvine"): (3400.0, 1200.0, 4200.0),
+    ("generic", "spycam"): (3800.0, 1400.0, 4800.0),
 }
 
 SELF_CENTERED_ABILITIES = {
@@ -147,15 +149,27 @@ def _normalized_name(value):
     return str(value).strip().lower().replace("_", "-")
 
 
-def _landing_rule(agent, ability):
+def _range_key(agent, ability, thrown_ranges):
     key = (_normalized_name(agent), _normalized_name(ability))
+    if key in thrown_ranges:
+        return key
+    fallback = ("generic", key[1])
+    return fallback if fallback in thrown_ranges else None
+
+
+def _landing_rule(agent, ability, thrown_ranges=None):
+    key = (_normalized_name(agent), _normalized_name(ability))
+    thrown_ranges = THROWN_RANGES if thrown_ranges is None else thrown_ranges
     if ability_is_remote_cast(key[1], key[0]):
         return "caster", None
     if key[1] in SELF_CENTERED_ABILITIES or ability_category(key[1], key[0]) == "movement":
         return "caster", None
+    if key in SHORT_PLACEMENTS:
+        return "short", SHORT_PLACEMENT_RANGE
     if key in WALL_PLACEMENTS:
         return "wall", WALL_PLACEMENTS[key]
-    thrown_range = THROWN_RANGES.get(key) or THROWN_RANGES.get(("generic", key[1]))
+    range_key = _range_key(key[0], key[1], thrown_ranges)
+    thrown_range = thrown_ranges.get(range_key) if range_key else None
     if thrown_range and thrown_range[2] > 0:
         return "thrown", thrown_range
     return "caster", None
@@ -168,7 +182,7 @@ def _scaled_thrown_range(view_x, view_y, view_z, ranges):
     return min(max(float(base_range) * math.cos(upward_angle), float(minimum)), float(maximum))
 
 
-def estimate_cast_landing(cast, shapes, masks=None):
+def estimate_cast_landing(cast, shapes, masks=None, thrown_ranges=None):
     """Return landing fields for one cast, preserving caster position when uncertain."""
     x = pd.to_numeric(cast.get("x"), errors="coerce")
     y = pd.to_numeric(cast.get("y"), errors="coerce")
@@ -176,7 +190,8 @@ def estimate_cast_landing(cast, shapes, masks=None):
         return {"landing_x": np.nan, "landing_y": np.nan, "landing_method": "caster_position", "estimated": False}
     x, y = float(x), float(y)
     fallback = {"landing_x": x, "landing_y": y, "landing_method": "caster_position", "estimated": False}
-    rule, details = _landing_rule(cast.get("agent"), cast.get("ability"))
+    thrown_ranges = THROWN_RANGES if thrown_ranges is None else thrown_ranges
+    rule, details = _landing_rule(cast.get("agent"), cast.get("ability"), thrown_ranges)
     if rule == "caster":
         return fallback
     map_name = str(cast.get("map", ""))
@@ -195,9 +210,10 @@ def estimate_cast_landing(cast, shapes, masks=None):
         mask = masks.get(map_name, masks.get(map_name.casefold()))
     if mask is None:
         mask = build_walkable_mask(shape)
-    max_range = float(details) if rule == "wall" else _scaled_thrown_range(
-        view_x, view_y, 0.0 if pd.isna(view_z) else view_z, details,
-    )
+    if rule in {"short", "wall"}:
+        max_range = float(details)
+    else:
+        max_range = _scaled_thrown_range(view_x, view_y, 0.0 if pd.isna(view_z) else view_z, details)
     landing_x, landing_y, method = ray_march_landing(
         x, y, view_x, view_y, shape, max_range, mask=mask,
     )
@@ -209,13 +225,14 @@ def estimate_cast_landing(cast, shapes, masks=None):
     }
 
 
-def add_landing_estimates(casts, shapes):
+def add_landing_estimates(casts, shapes, thrown_ranges=None):
     """Add estimated landing fields to a cast table without replacing caster coordinates."""
     result = casts.copy()
     masks = {map_name: build_walkable_mask(shape) for map_name, shape in shapes.items()}
+    thrown_ranges = THROWN_RANGES if thrown_ranges is None else thrown_ranges
     columns = ["map", "agent", "ability", "x", "y", "view_x", "view_y", "view_z"]
     estimates = [
-        estimate_cast_landing(dict(zip(columns, values)), shapes, masks)
+        estimate_cast_landing(dict(zip(columns, values)), shapes, masks, thrown_ranges)
         for values in result[columns].itertuples(index=False, name=None)
     ]
     for column in LANDING_COLUMNS:
@@ -223,8 +240,84 @@ def add_landing_estimates(casts, shapes):
     return result
 
 
-def landing_sanity_report(casts, shapes):
+def calibrate_thrown_ranges(casts, shapes, hit_threshold=0.4, reduction=0.8):
+    """Lower configured thrown caps once when too many valid rays reach their limit."""
+    ranges = {key: tuple(value) for key, value in THROWN_RANGES.items()}
+    masks = {map_name: build_walkable_mask(shape) for map_name, shape in shapes.items()}
+    groups = {}
+    columns = ["map", "agent", "ability", "x", "y", "view_x", "view_y", "view_z"]
+    for values in casts[columns].itertuples(index=False, name=None):
+        cast = dict(zip(columns, values))
+        rule, _ = _landing_rule(cast["agent"], cast["ability"], ranges)
+        if rule == "thrown":
+            key = _range_key(cast["agent"], cast["ability"], ranges)
+            groups.setdefault(key, []).append(cast)
+
+    adjustments = {}
+    for range_key, group in groups.items():
+        methods = [
+            estimate_cast_landing(cast, shapes, masks, ranges)["landing_method"]
+            for cast in group
+        ]
+        usable = [method for method in methods if method in {"wall_hit", "max_range"}]
+        max_hits = usable.count("max_range")
+        hit_fraction = max_hits / len(usable) if usable else 0.0
+        if hit_fraction <= hit_threshold:
+            continue
+        base_range, minimum, old_maximum = ranges[range_key]
+        new_maximum = max(minimum, math.floor(old_maximum * reduction / 100) * 100)
+        if new_maximum >= old_maximum:
+            new_maximum = max(minimum, old_maximum - 100)
+        if new_maximum < old_maximum:
+            ranges[range_key] = (base_range, minimum, new_maximum)
+            adjustments[range_key] = {
+                "max_hits": max_hits,
+                "valid_rays": len(usable),
+                "hit_fraction": hit_fraction,
+                "old_maximum": old_maximum,
+                "new_maximum": new_maximum,
+            }
+    return ranges, adjustments
+
+
+def _effective_limit(cast, thrown_ranges):
+    rule, details = _landing_rule(cast.get("agent"), cast.get("ability"), thrown_ranges)
+    if rule in {"short", "wall"}:
+        return float(details)
+    if rule != "thrown":
+        return np.nan
+    view_x = pd.to_numeric(cast.get("view_x"), errors="coerce")
+    view_y = pd.to_numeric(cast.get("view_y"), errors="coerce")
+    view_z = pd.to_numeric(cast.get("view_z"), errors="coerce")
+    if pd.isna(view_x) or pd.isna(view_y) or math.hypot(float(view_x), float(view_y)) <= 0:
+        return np.nan
+    return _scaled_thrown_range(view_x, view_y, 0.0 if pd.isna(view_z) else view_z, details)
+
+
+def landing_method_counts(casts):
+    """Return wall/range/caster method counts indexed by ability."""
+    methods = ["wall_hit", "max_range", "caster_position"]
+    if casts.empty or not {"ability", "landing_method"}.issubset(casts.columns):
+        return pd.DataFrame(columns=methods, dtype=int)
+    return casts.groupby("ability", dropna=False)["landing_method"].value_counts().unstack(
+        fill_value=0,
+    ).reindex(columns=methods, fill_value=0).sort_index()
+
+
+def print_landing_method_counts(casts, title):
+    counts = landing_method_counts(casts)
+    print(title)
+    for ability, row in counts.iterrows():
+        print(
+            f"  {ability}: wall_hit={int(row['wall_hit']):,}, "
+            f"max_range={int(row['max_range']):,}, "
+            f"caster_position={int(row['caster_position']):,}"
+        )
+
+
+def landing_sanity_report(casts, shapes, thrown_ranges=None, adjustments=None):
     """Summarize estimated-point mask coverage, per-ability distance, and examples."""
+    thrown_ranges = THROWN_RANGES if thrown_ranges is None else thrown_ranges
     estimated = casts[casts.get("estimated", pd.Series(False, index=casts.index)).fillna(False).astype(bool)].copy()
     map_coverage = {}
     for map_name, group in estimated.groupby("map", dropna=True, sort=True):
@@ -244,19 +337,56 @@ def landing_sanity_report(casts, shapes):
     )
     estimated["caster_landing_distance"] = distances
     medians = estimated.groupby("ability", dropna=True)["caster_landing_distance"].median().sort_index()
+    estimated["effective_limit"] = [
+        _effective_limit(row._asdict(), thrown_ranges)
+        for row in estimated.itertuples(index=False)
+    ]
+    effective_limits = estimated.groupby("ability", dropna=True)["effective_limit"].median().sort_index()
+    median_at_limit = {}
+    for ability, distance in medians.items():
+        limit = effective_limits.get(ability, np.nan)
+        if pd.isna(limit):
+            median_at_limit[ability] = False
+            continue
+        map_names = estimated.loc[estimated["ability"].eq(ability), "map"].dropna().astype(str)
+        step_sizes = [
+            _grid_step(shapes[name])
+            for name in map_names
+            if name in shapes or name.casefold() in shapes
+        ]
+        tolerance = max(step_sizes, default=100.0) * 0.51
+        median_at_limit[ability] = abs(float(distance) - float(limit)) <= tolerance
     samples = estimated.dropna(subset=["x", "y", "view_x", "view_y", "landing_x", "landing_y"]).head(5)
-    return {"map_coverage": map_coverage, "median_distance_by_ability": medians, "samples": samples}
+    return {
+        "map_coverage": map_coverage,
+        "median_distance_by_ability": medians,
+        "median_effective_limit_by_ability": effective_limits,
+        "median_at_limit": median_at_limit,
+        "method_counts_by_ability": landing_method_counts(casts),
+        "adjustments": adjustments or {},
+        "samples": samples,
+    }
 
 
-def print_landing_sanity_report(casts, shapes):
-    report = landing_sanity_report(casts, shapes)
+def print_landing_sanity_report(casts, shapes, thrown_ranges=None, adjustments=None):
+    report = landing_sanity_report(casts, shapes, thrown_ranges, adjustments)
     print("Landing sanity report (estimated points only):")
     for map_name, (inside, total) in report["map_coverage"].items():
         percentage = 100 * inside / total if total else 0.0
         print(f"  {map_name}: {percentage:.1f}% inside walkable mask ({inside}/{total})")
-    print("Median caster-to-landing distance by ability:")
+    print("Median caster-to-landing distance by ability (map units; max-limit flags):")
     for ability, distance in report["median_distance_by_ability"].items():
-        print(f"  {ability}: {distance:.0f} map units")
+        flag = " [FLAG: median equals effective maximum range]" if report["median_at_limit"][ability] else ""
+        print(f"  {ability}: {distance:.0f}{flag}")
+    print("Thrown maximum-range adjustments (>40% hit the configured range limit):")
+    if not report["adjustments"]:
+        print("  none")
+    for (agent, ability), adjustment in report["adjustments"].items():
+        print(
+            f"  {agent} / {ability}: {adjustment['hit_fraction']:.1%} hit max "
+            f"({adjustment['max_hits']}/{adjustment['valid_rays']}); "
+            f"max {adjustment['old_maximum']:.0f} → {adjustment['new_maximum']:.0f} map units"
+        )
     print("Sample casts (map, ability, caster, view, landing):")
     for row in report["samples"].itertuples(index=False):
         print(

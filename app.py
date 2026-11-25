@@ -9,6 +9,7 @@ import streamlit as st
 
 from analysis.abilities import CATEGORIES, ability_mapping
 from analysis.counter_plan import generate_counter_plan
+from analysis.landing import build_walkable_mask
 from analysis.map_shape import density_for_points, load_map_shapes
 from analysis.operator import (
     aggressiveness_label,
@@ -71,10 +72,12 @@ def _padded_axis_range(shape, axis, padding=0.05):
     return [lower - margin, upper + margin]
 
 
-def _separate_zone_markers(zones, shape=None, marker_gap_pixels=54, plot_pixels=600):
-    """Separate zone markers by their approximate screen-space footprint."""
+def _separate_zone_markers(
+    zones, shape=None, site_centres=None, marker_gap_pixels=54, plot_pixels=600,
+):
+    """Separate zone markers from each other and the site-letter markers."""
     positions = []
-    angles = np.linspace(0, 2 * math.pi, 48, endpoint=False)
+    angles = np.linspace(0, 2 * math.pi, 72, endpoint=False)
     if shape:
         map_span = max(
             float(shape["x_max"]) - float(shape["x_min"]),
@@ -83,24 +86,75 @@ def _separate_zone_markers(zones, shape=None, marker_gap_pixels=54, plot_pixels=
     else:
         map_span = 14000.0
     min_distance = map_span * marker_gap_pixels / plot_pixels
+    site_distance = map_span * (marker_gap_pixels + 18) / plot_pixels
+    x_bounds = _padded_axis_range(shape, "x") if shape else [-math.inf, math.inf]
+    y_bounds = _padded_axis_range(shape, "y") if shape else [-math.inf, math.inf]
+    site_points = [
+        (float(site["x"]), float(site["y"]))
+        for site in (site_centres or {}).values()
+    ]
+
+    def is_available(candidate):
+        return (
+            x_bounds[0] <= candidate[0] <= x_bounds[1]
+            and y_bounds[0] <= candidate[1] <= y_bounds[1]
+            and all(math.dist(candidate, previous) >= min_distance for previous in positions)
+            and all(math.dist(candidate, site) >= site_distance for site in site_points)
+        )
+
     for row in zones.itertuples(index=False):
-        location = (float(row.x), float(row.y))
-        if positions and any(math.dist(location, previous) < min_distance for previous in positions):
-            for ring in range(1, 16):
-                radius = min_distance * (1.15 + ring * 0.65)
+        original = (float(row.x), float(row.y))
+        location = original
+        collides = (
+            any(math.dist(location, previous) < min_distance for previous in positions)
+            or any(math.dist(location, site) < site_distance for site in site_points)
+            or not is_available(location)
+        )
+        if collides:
+            for ring in range(1, 18):
+                radius = min_distance * (1 + ring * 0.55)
                 candidates = [
-                    (location[0] + radius * math.cos(angle), location[1] + radius * math.sin(angle))
+                    (original[0] + radius * math.cos(angle), original[1] + radius * math.sin(angle))
                     for angle in angles
                 ]
-                available = [
-                    candidate for candidate in candidates
-                    if all(math.dist(candidate, previous) >= min_distance for previous in positions)
-                ]
+                available = [candidate for candidate in candidates if is_available(candidate)]
                 if available:
-                    location = min(available, key=lambda point: math.dist(point, (float(row.x), float(row.y))))
+                    location = min(available, key=lambda point: math.dist(point, original))
                     break
+            else:
+                candidates = [
+                    (min(max(original[0], x_bounds[0]), x_bounds[1]), min(max(original[1], y_bounds[0]), y_bounds[1])),
+                    (x_bounds[0], y_bounds[0]), (x_bounds[0], y_bounds[1]),
+                    (x_bounds[1], y_bounds[0]), (x_bounds[1], y_bounds[1]),
+                ]
+                location = max(
+                    candidates,
+                    key=lambda point: min(
+                        [math.dist(point, previous) for previous in positions]
+                        + [math.dist(point, site) for site in site_points]
+                        + [min_distance]
+                    ),
+                )
         positions.append(location)
     return [point[0] for point in positions], [point[1] for point in positions]
+
+
+def _casts_for_arrow_zone(casts, zones, selected_zone=None, sample_size=80, random_state=42):
+    """Select landing estimates for one 4 m zone or a bounded fallback sample."""
+    if not {"estimated", "caster_x", "caster_y", "x", "y"}.issubset(casts.columns):
+        return casts.iloc[0:0].copy()
+    candidates = casts[
+        casts["estimated"].fillna(False).astype(bool)
+        & casts["caster_x"].notna() & casts["caster_y"].notna()
+        & casts["x"].notna() & casts["y"].notna()
+        & ((casts["x"] != casts["caster_x"]) | (casts["y"] != casts["caster_y"]))
+    ].copy()
+    if selected_zone is not None and 1 <= int(selected_zone) <= len(zones):
+        zone = zones.iloc[int(selected_zone) - 1]
+        cell_x = (pd.to_numeric(candidates["x"], errors="coerce") / 400).map(math.floor)
+        cell_y = (pd.to_numeric(candidates["y"], errors="coerce") / 400).map(math.floor)
+        return candidates[cell_x.eq(int(zone["cell_x"])) & cell_y.eq(int(zone["cell_y"]))]
+    return candidates.sample(n=min(int(sample_size), len(candidates)), random_state=random_state)
 
 
 def _category_counts(casts):
@@ -169,8 +223,11 @@ def _team_labels(rounds):
     ).reset_index(drop=True)
 
 
-def _map_figure(shape, casts, zones, show_dots, map_name, site_centres, position_mode="Caster"):
+def _map_figure(
+    shape, casts, zones, show_dots, map_name, site_centres, position_mode="Caster", arrow_zone=1,
+):
     figure = go.Figure()
+    walkable_mask = build_walkable_mask(shape)
     figure.add_trace(go.Heatmap(
         x=shape["x"], y=shape["y"], z=shape["density"],
         colorscale=[[0, "rgba(0,0,0,0)"], [0.2, "#343b46"], [1, "#a4abb5"]],
@@ -181,7 +238,9 @@ def _map_figure(shape, casts, zones, show_dots, map_name, site_centres, position
     if not located.empty:
         points = located[["x", "y"]].to_numpy(dtype=float)
         cast_density = density_for_points(points, shape, sigma=12)
-        if cast_density.max() > 0:
+        cast_density[~walkable_mask] = np.nan
+        finite_density = cast_density[np.isfinite(cast_density)]
+        if finite_density.size and finite_density.max() > 0:
             figure.add_trace(go.Heatmap(
                 x=shape["x"], y=shape["y"], z=cast_density,
                 colorscale=[
@@ -193,17 +252,19 @@ def _map_figure(shape, casts, zones, show_dots, map_name, site_centres, position
             ))
         if show_dots:
             if position_mode == "Estimated landing" and {"caster_x", "caster_y", "estimated"}.issubset(located.columns):
-                estimated = located[
-                    located["estimated"].fillna(False).astype(bool)
-                    & located["caster_x"].notna() & located["caster_y"].notna()
-                    & ((located["x"] != located["caster_x"]) | (located["y"] != located["caster_y"]))
-                ]
+                estimated = _casts_for_arrow_zone(located, zones, arrow_zone)
                 for cast in estimated.itertuples(index=False):
                     figure.add_annotation(
                         x=float(cast.x), y=float(cast.y), ax=float(cast.caster_x), ay=float(cast.caster_y),
                         xref="x", yref="y", axref="x", ayref="y", showarrow=True,
-                        arrowhead=2, arrowsize=0.7, arrowwidth=1, arrowcolor="rgba(248,250,252,0.65)",
+                        arrowhead=1, arrowsize=0.6, arrowwidth=0.6, arrowcolor="rgba(248,250,252,0.32)",
                     )
+                if not estimated.empty:
+                    figure.add_trace(go.Scattergl(
+                        x=estimated["x"], y=estimated["y"], mode="markers",
+                        marker={"size": 3, "color": "#f8fafc", "opacity": 0.72, "line": {"width": 0}},
+                        hoverinfo="skip", name="Estimated landing points",
+                    ))
             figure.add_trace(go.Scattergl(
                 x=located["x"], y=located["y"], mode="markers",
                 marker={"size": 5, "color": "#f8fafc", "opacity": 0.62, "line": {"width": 0}},
@@ -224,7 +285,7 @@ def _map_figure(shape, casts, zones, show_dots, map_name, site_centres, position
 
     top_zones = zones.head(5)
     if not top_zones.empty:
-        marker_x, marker_y = _separate_zone_markers(top_zones, shape)
+        marker_x, marker_y = _separate_zone_markers(top_zones, shape, map_sites)
         figure.add_trace(go.Scatter(
             x=marker_x, y=marker_y, mode="markers+text",
             text=[str(index) for index in range(1, len(top_zones) + 1)],
@@ -245,11 +306,11 @@ def _map_figure(shape, casts, zones, show_dots, map_name, site_centres, position
         template="plotly_dark", height=650, margin={"l": 8, "r": 8, "t": 16, "b": 8},
         plot_bgcolor="#111827", paper_bgcolor="#111827", showlegend=False, autosize=True,
         xaxis={"title": None, "range": x_range, "showgrid": False, "zeroline": False,
-               "showticklabels": False, "ticks": "", "constrain": "range"},
+               "showticklabels": False, "ticks": "", "constrain": "domain"},
         yaxis={"title": None, "range": y_range, "showgrid": False, "zeroline": False,
-               "showticklabels": False, "ticks": "", "constrain": "range"},
+               "showticklabels": False, "ticks": "", "constrain": "domain"},
     )
-    figure.update_yaxes(scaleanchor="x", scaleratio=1, constrain="range")
+    figure.update_yaxes(scaleanchor="x", scaleratio=1, constrain="domain")
     return figure
 
 
@@ -601,6 +662,18 @@ def _render_utility_tab(tables, team_name, team_id, map_name, selected_side, sid
         st.caption("Estimated landing points use aim direction and the walkability mask; they are not exact utility positions.")
     zones = label_zones(aggregate_zone_cells(position_casts, denominator), map_name, site_centres)
     shape = shapes.get(map_name)
+    arrow_zone = 1 if not zones.empty else None
+    if show_dots and position_mode == "Estimated landing":
+        arrow_options = [*range(1, min(5, len(zones)) + 1), None]
+        arrow_zone = st.selectbox(
+            "Arrows for hot zone", arrow_options,
+            format_func=lambda value: (
+                "No selected zone · random sample (max 80)" if value is None
+                else f"Zone {value} · {zones.iloc[value - 1]['site_label']}"
+            ),
+            key=f"arrow_zone_{key_suffix}_{category}_{position_mode}",
+            help="Estimated-landing arrows are limited to this zone; choose no zone to see a random sample of at most 80.",
+        )
     series_count = int(denominator["series_id"].nunique())
     game_count = int(denominator[["series_id", "game_id"]].drop_duplicates().shape[0])
     round_count = int(denominator[["series_id", "game_id", "round_number"]].drop_duplicates().shape[0])
@@ -654,7 +727,10 @@ def _render_utility_tab(tables, team_name, team_id, map_name, selected_side, sid
             st.warning("No cached positions are available for this map.")
         else:
             st.plotly_chart(
-                _map_figure(shape, position_casts, zones, show_dots, map_name, site_centres, position_mode),
+                _map_figure(
+                    shape, position_casts, zones, show_dots, map_name, site_centres,
+                    position_mode, arrow_zone,
+                ),
                 width="stretch",
             )
         if not filtered_casts.empty:

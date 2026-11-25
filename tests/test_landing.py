@@ -6,7 +6,9 @@ import pandas as pd
 from analysis.landing import (
     add_landing_estimates,
     build_walkable_mask,
+    calibrate_thrown_ranges,
     estimate_cast_landing,
+    landing_sanity_report,
     ray_march_landing,
 )
 
@@ -61,7 +63,7 @@ class LandingTests(unittest.TestCase):
             "y": np.arange(3, dtype=float),
         }
         horizontal = {
-            "map": "Lotus", "agent": "killjoy", "ability": "nanoswarm",
+            "map": "Lotus", "agent": "brimstone", "ability": "incendiary",
             "x": 500, "y": 1, "view_x": 1, "view_y": 0, "view_z": 0,
         }
         upward = {**horizontal, "view_z": 1}
@@ -72,6 +74,72 @@ class LandingTests(unittest.TestCase):
         self.assertTrue(flat_landing["estimated"])
         self.assertTrue(high_landing["estimated"])
         self.assertLess(high_landing["landing_x"] - 500, flat_landing["landing_x"] - 500)
+
+    def test_short_placements_and_trapwire_use_requested_metre_limits(self):
+        shape = {
+            "density": np.ones((3, 401)),
+            "x": np.arange(401, dtype=float) * 50,
+            "y": np.arange(3, dtype=float) * 50,
+        }
+        base = {"map": "Lotus", "x": 1000, "y": 50, "view_x": 1, "view_y": 0, "view_z": 0}
+
+        short_placements = (
+            ("killjoy", "alarmbot"), ("killjoy", "turret"), ("killjoy", "nanoswarm"),
+            ("chamber", "trademark"), ("deadlock", "sonic-sensor"), ("vyse", "shear"),
+        )
+        for agent, ability in short_placements:
+            with self.subTest(agent=agent, ability=ability):
+                short = estimate_cast_landing(
+                    {**base, "agent": agent, "ability": ability}, {"Lotus": shape},
+                )
+                self.assertEqual(short["landing_method"], "max_range")
+                self.assertAlmostEqual(short["landing_x"] - base["x"], 500)
+        trapwire = estimate_cast_landing(
+            {**base, "agent": "cypher", "ability": "trapwire"}, {"Lotus": shape},
+        )
+
+        self.assertEqual(trapwire["landing_method"], "max_range")
+        self.assertAlmostEqual(trapwire["landing_x"] - base["x"], 800)
+
+    def test_calibration_reduces_a_thrown_cap_when_more_than_40_percent_hit_it(self):
+        shape = {
+            "density": np.ones((3, 401)),
+            "x": np.arange(401, dtype=float) * 50,
+            "y": np.arange(3, dtype=float) * 50,
+        }
+        casts = pd.DataFrame([
+            {
+                "map": "Lotus", "agent": "viper", "ability": "poison-cloud",
+                "x": 1000 + index * 100, "y": 50,
+                "view_x": 1, "view_y": 0, "view_z": 0,
+            }
+            for index in range(10)
+        ])
+
+        ranges, adjustments = calibrate_thrown_ranges(casts, {"Lotus": shape})
+
+        adjustment = adjustments[("generic", "poison-cloud")]
+        self.assertEqual(adjustment["hit_fraction"], 1.0)
+        self.assertEqual(adjustment["old_maximum"], 5500)
+        self.assertEqual(adjustment["new_maximum"], 4400)
+        self.assertEqual(ranges[("generic", "poison-cloud")][2], 4400)
+
+    def test_sanity_report_flags_median_equal_to_the_effective_maximum(self):
+        shape = {
+            "density": np.ones((3, 401)),
+            "x": np.arange(401, dtype=float) * 50,
+            "y": np.arange(3, dtype=float) * 50,
+        }
+        casts = pd.DataFrame([{
+            "map": "Lotus", "agent": "killjoy", "ability": "nanoswarm",
+            "x": 1000.0, "y": 50.0, "view_x": 1.0, "view_y": 0.0, "view_z": 0.0,
+        }])
+        estimated = add_landing_estimates(casts, {"Lotus": shape})
+
+        report = landing_sanity_report(estimated, {"Lotus": shape})
+
+        self.assertTrue(report["median_at_limit"]["nanoswarm"])
+        self.assertEqual(report["median_distance_by_ability"]["nanoswarm"], 500.0)
 
     def test_add_estimates_preserves_caster_coordinates_and_adds_required_fields(self):
         shape = _shape([[1] * 20 for _ in range(3)])

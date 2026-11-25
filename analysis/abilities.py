@@ -3,25 +3,28 @@
 import pandas as pd
 
 
-CATEGORIES = ("placeable", "recon", "smoke", "stall/wall", "flash", "movement", "other")
+CATEGORIES = ("placeable", "recon", "damage", "smoke", "stall/wall", "flash", "movement", "other")
 
 _CATEGORY_BY_ABILITY = {}
 for _category, _abilities in {
     "recon": {
-        "boom-bot", "haunt", "hunter's-fury", "neural-theft", "nightfall", "owl-drone",
+        "haunt", "neural-theft", "nightfall", "owl-drone",
         "prowler", "recon-bolt", "seekers", "stealth-drone", "trailblazer", "zero-point",
+    },
+    "damage": {
+        "aftershock", "armageddon", "blast-pack", "boom-bot", "frag-ment", "guided-salvo",
+        "hot-hands", "hunter's-fury", "incendiary", "mosh-pit", "nanoswarm", "orbital-strike",
+        "paint-shells", "razorvine", "shock-bolt", "showstopper", "snake-bite", "turret",
     },
     "smoke": {
         "cloudburst", "cove", "dark-cover", "nebula-dissipate", "poison-cloud", "ruse",
         "sky-smoke", "stars", "toxic-screen", "viper's-pit",
     },
     "stall/wall": {
-        "aftershock", "annihilation", "armageddon", "barrier-mesh", "barrier-orb", "blaze",
-        "cascade", "contingency", "fault-line", "fast-lane", "frag-ment", "gravnet",
-        "gravity-well", "guided-salvo", "high-tide", "hot-hands", "incendiary", "meddle",
-        "lockdown", "mosh-pit", "nova-pulse", "orbital-strike", "paint-shells", "reckoning",
-        "relay-bolt", "rolling-thunder", "seize", "shock-bolt", "slow-orb", "snake-bite",
-        "special-delivery", "storm-surge", "steel-garden", "saturate", "thrash", "undercut",
+        "annihilation", "barrier-mesh", "barrier-orb", "blaze", "cascade", "contingency",
+        "fault-line", "fast-lane", "gravnet", "gravity-well", "high-tide", "meddle",
+        "lockdown", "nova-pulse", "reckoning", "relay-bolt", "rolling-thunder", "seize",
+        "slow-orb", "special-delivery", "steel-garden", "storm-surge", "saturate", "thrash", "undercut",
         "wingman",
     },
     "flash": {
@@ -29,7 +32,7 @@ for _category, _abilities in {
         "leer", "paranoia",
     },
     "movement": {
-        "blast-pack", "convergent-paths", "dimensional-drift", "from-the-shadows", "gatecrash",
+        "convergent-paths", "dimensional-drift", "from-the-shadows", "gatecrash",
         "high-gear", "light-speed", "pick-me-up", "refract", "rendezvous", "shrouded-step",
         "tailwind", "updraft",
     },
@@ -39,9 +42,9 @@ for _category, _abilities in {
 
 _PLACEABLE_BY_AGENT = {
     "cypher": {"spycam", "trapwire"},
-    "killjoy": {"alarmbot", "nanoswarm", "turret"},
+    "killjoy": {"alarmbot"},
     "chamber": {"trademark"},
-    "vyse": {"arc-rose", "razorvine", "shear"},
+    "vyse": {"arc-rose", "shear"},
     "deadlock": {"sonic-sensor"},
 }
 

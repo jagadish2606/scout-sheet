@@ -6,7 +6,12 @@ from pathlib import Path
 import pandas as pd
 
 from analysis.extract import TABLE_COLUMNS, extract_series
-from analysis.landing import add_landing_estimates, print_landing_sanity_report
+from analysis.landing import (
+    add_landing_estimates,
+    calibrate_thrown_ranges,
+    print_landing_method_counts,
+    print_landing_sanity_report,
+)
 from analysis.map_shape import load_map_shapes
 from analysis.sites import load_site_centres
 from config import DATA_DIR
@@ -77,6 +82,8 @@ def select_series_ids(data_dir=DATA_DIR):
 def build_cache(series_ids=None, limit=None, data_dir=DATA_DIR, cache_dir=None, sample_rows=5):
     data_dir = Path(data_dir)
     cache_dir = Path(cache_dir) if cache_dir is not None else Path(__file__).parent / "cache"
+    previous_casts_path = cache_dir / "casts.parquet"
+    previous_casts = pd.read_parquet(previous_casts_path) if previous_casts_path.is_file() else None
     if series_ids is None:
         series_ids = select_series_ids(data_dir)
     else:
@@ -99,8 +106,12 @@ def build_cache(series_ids=None, limit=None, data_dir=DATA_DIR, cache_dir=None, 
         final[table_name] = frame
 
     shapes = load_map_shapes(final["casts"], final["kills"], cache_dir)
-    final["casts"] = add_landing_estimates(final["casts"], shapes)
-    print_landing_sanity_report(final["casts"], shapes)
+    thrown_ranges, adjustments = calibrate_thrown_ranges(final["casts"], shapes)
+    final["casts"] = add_landing_estimates(final["casts"], shapes, thrown_ranges)
+    if previous_casts is not None:
+        print_landing_method_counts(previous_casts, "BEFORE landing method counts by ability (existing cache):")
+    print_landing_method_counts(final["casts"], "AFTER landing method counts by ability:")
+    print_landing_sanity_report(final["casts"], shapes, thrown_ranges, adjustments)
 
     for table_name, frame in final.items():
         path = cache_dir / f"{table_name}.parquet"
