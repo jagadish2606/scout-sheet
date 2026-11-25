@@ -1,0 +1,11 @@
+[project]
+name = "scout-sheet"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "pandas>=3.1.1",
+    "plotly>=7.2.0",
+    "streamlit>=1.67.0",
+]
