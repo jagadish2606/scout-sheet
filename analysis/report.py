@@ -93,8 +93,8 @@ def _zone_rows(zones, side, map_name):
             f"<span class='ability-name'>{escape(str(zone.ability_name))}</span>"
             f"<small><b>Agent:</b> {escape(str(zone.agent).title())} · "
             f"<b>Player:</b> {escape(str(zone.player_name))}; "
-            f"{int(zone.rounds_used)}/{int(zone.total_rounds)} {escape(side)} rounds "
-            f"({float(zone.percentage):.0f}%), {int(zone.series_count)} series · {escape(map_name)}</small></li>"
+            f"{int(zone.rounds_used):,}/{int(zone.total_rounds):,} {escape(side)} rounds "
+            f"({float(zone.percentage):.0f}%), {int(zone.series_count):,} series · {escape(map_name)}</small></li>"
         )
     return "".join(rows)
 
@@ -114,12 +114,12 @@ def _operator_summary(rounds, buys, team_id, map_name, selected_side, team_name)
     else:
         holder = (
             f"{escape(str(primary['player_name']))} was the leading holder, appearing in "
-            f"{int(primary['rounds'])}/{holder_rounds} Operator rounds ({float(primary['share']):.0f}%)."
+            f"{int(primary['rounds']):,}/{holder_rounds:,} Operator rounds ({float(primary['share']):.0f}%)."
         )
     return (
-        f"<p><b>{escape(team_name)}</b> held an Operator in {held}/{observed} recorded {escape(selected_side)} "
+        f"<p><b>{escape(team_name)}</b> held an Operator in {held:,}/{observed:,} recorded {escape(selected_side)} "
         f"buy snapshots ({rate:.0f}%).</p><p>{holder}</p>"
-        f"<p class='muted'>Snapshot coverage: {observed}/{int(side_rates.get('eligible_rounds', 0))} rounds; "
+        f"<p class='muted'>Snapshot coverage: {observed:,}/{int(side_rates.get('eligible_rounds', 0)):,} rounds; "
         "freeze-time possession does not track later pickups or drops.</p>"
     )
 
@@ -206,7 +206,7 @@ def generate_scouting_report(
         utility_insight = (
             f"{escape(team_name)} most often use {escape(str(strongest['ability_name']))} "
             f"{escape(location_phrase)} in {float(strongest['percentage']):.0f}% of "
-            f"{escape(selected_side)} rounds ({int(strongest['rounds_used'])}/{int(strongest['total_rounds'])})."
+            f"{escape(selected_side)} rounds ({int(strongest['rounds_used']):,}/{int(strongest['total_rounds']):,})."
         )
     operator_markup = _operator_summary(rounds, tables["buys"], team_id, map_name, selected_side, team_name)
     counters = _counter_cards(

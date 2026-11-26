@@ -81,7 +81,7 @@ def _buy_snapshot_fact(side, summary):
     if not observed:
         return f"No {side} buy snapshots recorded (0 observed)."
     return (
-        f"{summary.get('held_rounds', 0)}/{observed} {side} buy snapshots "
+        f"{int(summary.get('held_rounds', 0)):,}/{observed:,} {side} buy snapshots "
         f"({summary.get('rate', 0):.0f}%)."
     )
 
@@ -120,7 +120,7 @@ def _utility_cards(rounds, casts, team_id, team_name, map_name, side, site_centr
         if self_scout:
             tendency = (
                 f"Opponents can expect {ability_name} at {zone} in {percentage:.0f}% of your "
-                f"{display_side} rounds ({rounds_used}/{total_rounds}), mostly during {window}."
+                f"{display_side} rounds ({rounds_used:,}/{total_rounds:,}), mostly during {window}."
             )
             title = f"Your {ability_name} at {zone}"
             response = "Consider varying timing or position."
@@ -138,10 +138,10 @@ def _utility_cards(rounds, casts, team_id, team_name, map_name, side, site_centr
             "type": "Utility",
             "title": title,
             "tendency": tendency,
-            "evidence": f"{rounds_used}/{total_rounds} rounds ({percentage:.0f}%), {series_count} series.",
+            "evidence": f"{rounds_used:,}/{total_rounds:,} rounds ({percentage:.0f}%), {series_count:,} series.",
             "facts": [
-                f"{rounds_used}/{total_rounds} {display_side} rounds ({percentage:.0f}%).",
-                f"{window_count}/{cast_count} casts during {window}; {series_count} series.",
+                f"{rounds_used:,}/{total_rounds:,} {display_side} rounds ({percentage:.0f}%).",
+                f"{window_count:,}/{cast_count:,} casts during {window}; {series_count:,} series.",
             ],
             "confidence": confidence,
             "confidence_order": CONFIDENCE_ORDER[confidence],
@@ -239,13 +239,13 @@ def _operator_cards(
             if self_scout:
                 tendency = (
                     f"Opponents can expect {primary['player_name']} to hold your Operator in {share:.0f}% "
-                    f"of your {display_side} Operator rounds ({int(primary['rounds'])}/{op_rounds}) across all maps."
+                    f"of your {display_side} Operator rounds ({int(primary['rounds']):,}/{op_rounds:,}) across all maps."
                 )
                 advice = "Consider varying the Operator holder, timing, or angle across maps."
             else:
                 tendency = (
                     f"{primary['player_name']} holds {team_possessive(team_name)} Operator in {share:.0f}% of their "
-                    f"{display_side} Operator rounds ({int(primary['rounds'])}/{op_rounds}) across all maps."
+                    f"{display_side} Operator rounds ({int(primary['rounds']):,}/{op_rounds:,}) across all maps."
                 )
                 if timing_count < 10 and aggression_count < 10:
                     advice = "Use flashes or smokes to clear likely Operator angles rather than dry-peeking."
@@ -269,32 +269,32 @@ def _operator_cards(
                     )
 
             facts = [
-                f"Operator holder share: {int(primary['rounds'])}/{op_rounds} rounds ({share:.0f}%).",
+                f"Operator holder share: {int(primary['rounds']):,}/{op_rounds:,} rounds ({share:.0f}%).",
                 (
                     f"{_buy_snapshot_fact('defense', defense)} {_buy_snapshot_fact('attack', attack)}"
                 ),
             ]
             if timing_count:
                 facts.append(
-                    f"Timing: {early_count}/{timing_count} engagements at 0–20 s; "
-                    f"{late_count}/{timing_count} after 20 s."
+                    f"Timing: {early_count:,}/{timing_count:,} engagements at 0–20 s; "
+                    f"{late_count:,}/{timing_count:,} after 20 s."
                 )
             if aggression_count:
                 facts.append(
-                    f"Position proxy: {aggressive_count}/{aggression_count} aggressive; "
-                    f"{passive_count}/{aggression_count} passive."
+                    f"Position proxy: {aggressive_count:,}/{aggression_count:,} aggressive; "
+                    f"{passive_count:,}/{aggression_count:,} passive."
                 )
             if not timing_count and not aggression_count:
-                facts.append(f"Defense engagement sample: {len(engagements)} events; angle profile unavailable.")
+                facts.append(f"Defense engagement sample: {len(engagements):,} events; angle profile unavailable.")
             cards.append({
                 "type": "Operator",
                 "title": f"{primary['player_name']} — {display_side} Operator holder · All maps",
                 "tendency": tendency,
                 "evidence": (
-                    f"{int(primary['rounds'])}/{op_rounds} Operator rounds ({share:.0f}% holder share); "
-                    f"buy snapshots: defense {defense.get('held_rounds', 0)}/{defense.get('observed_rounds', 0)}, "
-                    f"attack {attack.get('held_rounds', 0)}/{attack.get('observed_rounds', 0)}; "
-                    f"{series_count} series."
+                    f"{int(primary['rounds']):,}/{op_rounds:,} Operator rounds ({share:.0f}% holder share); "
+                    f"buy snapshots: defense {int(defense.get('held_rounds', 0)):,}/{int(defense.get('observed_rounds', 0)):,}, "
+                    f"attack {int(attack.get('held_rounds', 0)):,}/{int(attack.get('observed_rounds', 0)):,}; "
+                    f"{series_count:,} series."
                 ),
                 "facts": facts[:4],
                 "confidence": confidence,
@@ -338,15 +338,15 @@ def _operator_cards(
                     "title": "Operator buy-rate split · All maps",
                     "tendency": tendency,
                     "evidence": (
-                        f"{higher['held_rounds']}/{higher['observed_rounds']} {higher_side} snapshots "
-                        f"({higher['rate']:.0f}%), {lower['held_rounds']}/{lower['observed_rounds']} "
+                        f"{int(higher['held_rounds']):,}/{int(higher['observed_rounds']):,} {higher_side} snapshots "
+                        f"({higher['rate']:.0f}%), {int(lower['held_rounds']):,}/{int(lower['observed_rounds']):,} "
                         f"{lower_side} snapshots ({lower['rate']:.0f}%), {difference:.0f} points; "
-                        f"{series_count} series."
+                        f"{series_count:,} series."
                     ),
                     "facts": [
-                        f"{higher['held_rounds']}/{higher['observed_rounds']} {higher_side} buy snapshots ({higher['rate']:.0f}%).",
-                        f"{lower['held_rounds']}/{lower['observed_rounds']} {lower_side} buy snapshots ({lower['rate']:.0f}%).",
-                        f"{difference:.0f}-point gap across {series_count} series.",
+                        f"{int(higher['held_rounds']):,}/{int(higher['observed_rounds']):,} {higher_side} buy snapshots ({higher['rate']:.0f}%).",
+                        f"{int(lower['held_rounds']):,}/{int(lower['observed_rounds']):,} {lower_side} buy snapshots ({lower['rate']:.0f}%).",
+                        f"{difference:.0f}-point gap across {series_count:,} series.",
                     ],
                     "confidence": confidence,
                     "confidence_order": CONFIDENCE_ORDER[confidence],

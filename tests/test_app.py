@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
+from streamlit.testing.v1 import AppTest
 
 from analysis.abilities import CATEGORIES
 from analysis.landing import build_walkable_mask
@@ -25,10 +26,37 @@ from app import (
     _sentinel_summary,
     _separate_zone_markers,
     _set_ability_category,
+    _scouting_report_download_data,
 )
 
 
 class UtilityMapAppTests(unittest.TestCase):
+    def test_welcome_panel_starts_open_and_remembers_collapse_for_session(self):
+        def welcome_app():
+            from app import _render_welcome_panel
+            _render_welcome_panel()
+
+        app = AppTest.from_function(welcome_app).run()
+
+        self.assertFalse(app.exception)
+        self.assertTrue(app.session_state["welcome_panel"])
+        self.assertIn("Welcome to Scout Sheet", [expander.label for expander in app.expander])
+
+        app.session_state["welcome_panel"] = False
+        app.run()
+
+        self.assertFalse(app.exception)
+        self.assertFalse(app.session_state["welcome_panel"])
+
+    def test_scouting_report_is_not_generated_until_download_is_requested(self):
+        with patch("app._cached_scouting_report", return_value="<html>report</html>") as generate_report:
+            download_data = _scouting_report_download_data("report args")
+            generate_report.assert_not_called()
+
+            self.assertEqual(download_data(), "<html>report</html>")
+
+            generate_report.assert_called_once_with("report args")
+
     def test_map_resets_only_on_team_change_when_below_twenty_rounds(self):
         counts = pd.Series({"Lotus": 120, "Fracture": 18})
         options = ["Lotus", "Fracture"]

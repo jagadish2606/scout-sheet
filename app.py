@@ -98,7 +98,7 @@ def load_event_catalog(signature, series_csv):
     return load_series_event_map(series_csv)
 
 
-@st.cache_data(show_spinner="Preparing printable scouting report…")
+@st.cache_data(show_spinner=False)
 def _cached_scouting_report(
     cache_signature, generated_date, team_name, team_id, map_name, selected_side, side,
     _tables, _shapes, _site_centres, _spawn_estimates,
@@ -109,12 +109,67 @@ def _cached_scouting_report(
     )
 
 
-def _download_report(report_html, tab_key):
+def _scouting_report_download_data(*report_args):
+    def prepare_report():
+        return _cached_scouting_report(*report_args)
+
+    return prepare_report
+
+
+def _download_report(report_data, tab_key):
     st.download_button(
-        "Download scouting report", report_html,
+        "Download scouting report", report_data,
         file_name="scout-sheet-scouting-report.html", mime="text/html",
         key=f"download_scouting_report_{tab_key}",
     )
+
+
+def _render_app_style():
+    st.markdown(
+        """
+        <style>
+        [data-testid="stMainBlockContainer"] {
+            padding-top: 1.5rem;
+            padding-bottom: 1.5rem;
+        }
+        h1 { font-size: clamp(2rem, 2.4vw, 2.8rem) !important; }
+        h2, h3 { letter-spacing: -0.015em; }
+        [data-testid="stMetricValue"] {
+            font-size: clamp(1.35rem, 1.7vw, 2rem);
+            line-height: 1.15;
+        }
+        [data-testid="stVerticalBlockBorderWrapper"] {
+            border-color: rgba(148, 163, 184, 0.35);
+            border-radius: 0.85rem;
+        }
+        [data-testid="stPlotlyChart"] { width: 100%; }
+        @media (max-width: 900px) {
+            [data-testid="stMainBlockContainer"] {
+                padding-left: 1rem;
+                padding-right: 1rem;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_welcome_panel():
+    if "welcome_panel" not in st.session_state:
+        st.session_state["welcome_panel"] = True
+    with st.expander(
+        "Welcome to Scout Sheet", expanded=True, key="welcome_panel", on_change="rerun",
+    ):
+        st.write(
+            "Scout Sheet helps coaches find opponent utility patterns, Operator habits, and repeatable tendencies."
+        )
+        st.markdown(
+            "**Utility Map** — Locate recurring utility zones and round-by-round evidence.  \n"
+            "**Operator Profiler** — Review Operator buys, holders, engagements, and angles.  \n"
+            "**Counter Plan** — Turn measured patterns into evidence-backed responses."
+        )
+        st.caption("Pick a circuit and team on the left to start.")
 
 
 def _missing_prerequisites(data_dir=DATA_DIR, cache_dir=CACHE_DIR):
@@ -562,14 +617,14 @@ def _operator_headline(
             share = float(primary.get("share", 100 * held_rounds / operator_rounds))
             facts.append(
                 f"{player_name} holds {team_possessive(team_name)} Operator in {share:.0f}% of their "
-                f"{selected_side} Operator rounds ({held_rounds}/{operator_rounds})."
+                f"{selected_side} Operator rounds ({held_rounds:,}/{operator_rounds:,})."
             )
     side_buy_rates = side_buy_rates or {}
     attack = side_buy_rates.get("attacker", {})
     defense = side_buy_rates.get("defender", {})
     if attack.get("observed_rounds", 0) and defense.get("observed_rounds", 0):
-        attack_text = f"{attack['rate']:.0f}% ({attack['held_rounds']}/{attack['observed_rounds']})"
-        defense_text = f"{defense['rate']:.0f}% ({defense['held_rounds']}/{defense['observed_rounds']})"
+        attack_text = f"{attack['rate']:.0f}% ({int(attack['held_rounds']):,}/{int(attack['observed_rounds']):,})"
+        defense_text = f"{defense['rate']:.0f}% ({int(defense['held_rounds']):,}/{int(defense['observed_rounds']):,})"
         if defense["rate"] > attack["rate"]:
             facts.append(
                 f"{team_name} buy the Operator in {defense_text} of defense rounds but only "
@@ -593,7 +648,7 @@ def _operator_headline(
                 early = int(timed.between(0, 20, inclusive="left").sum())
                 facts.append(
                     f"{100 * early / len(timed):.0f}% of {primary['player_name']}'s defense Operator engagements "
-                    f"happen in 0–20 s ({early}/{len(timed)})."
+                    f"happen in 0–20 s ({early:,}/{len(timed):,})."
                 )
             known = engagements.loc[
                 ~engagements["aggressiveness"].eq("unknown"), "aggressiveness",
@@ -691,8 +746,8 @@ def _profile_engagements(
     return engagements, player_summary
 
 
-def _render_utility_tab(tables, team_name, team_id, map_name, selected_side, side, shapes, site_centres, report_html):
-    _download_report(report_html, "utility")
+def _render_utility_tab(tables, team_name, team_id, map_name, selected_side, side, shapes, site_centres, report_data):
+    _download_report(report_data, "utility")
     rounds, casts, buys = tables["rounds"], tables["casts"], tables["buys"]
     denominator = eligible_rounds(rounds, team_id, map_name, side)
     matched, unmatched = match_casts_to_rounds(casts, denominator)
@@ -795,12 +850,13 @@ def _render_utility_tab(tables, team_name, team_id, map_name, selected_side, sid
         strongest = zones.iloc[0]
         label = strongest["site_label"]
         location = label if label.startswith("near ") or label == "Site unknown" else f"at {label}"
-        st.markdown(
-            f"**{team_name} use utility {location} in {strongest['percentage']:.0f}% of {selected_side} rounds "
-            f"on {map_name.title()} ({strongest['rounds_used']}/{strongest['total_rounds']}, "
-            f"{strongest['series_count']} series).** Most common: "
-            f"{strongest['agent'].title()} · {strongest['ability_name']}."
-        )
+        with st.container(border=True):
+            st.markdown(
+                f"**{team_name} use utility {location} in {strongest['percentage']:.0f}% of {selected_side} rounds "
+                f"on {map_name.title()} ({int(strongest['rounds_used']):,}/{int(strongest['total_rounds']):,}, "
+                f"{int(strongest['series_count']):,} series).** Most common: "
+                f"{strongest['agent'].title()} · {strongest['ability_name']}."
+            )
     elif filtered_casts.empty:
         summary = _sentinel_summary(buys, team_id, map_name)
         label = "all categories" if category == "all" else category.title()
@@ -820,7 +876,7 @@ def _render_utility_tab(tables, team_name, team_id, map_name, selected_side, sid
     metrics[2].metric("Rounds", f"{round_count:,}")
     metrics[3].metric("Matching casts", f"{len(filtered_casts):,}")
     if round_count < 20:
-        st.warning(f"Small sample: only {round_count} {selected_side} rounds match this team/map/side selection.")
+        st.warning(f"Small sample: only {round_count:,} {selected_side} rounds match this team/map/side selection.")
     if unmatched:
         st.info(f"Excluded {unmatched:,} cast rows that did not match a team/map/side round record.")
     with st.expander("How this is calculated"):
@@ -862,13 +918,13 @@ def _render_utility_tab(tables, team_name, team_id, map_name, selected_side, sid
                 st.info("Matching casts are present, but none have usable positions for a hot zone.")
         else:
             for index, zone in enumerate(zones.head(5).itertuples(index=False), start=1):
-                st.markdown(f"#### {index}. {zone.site_label} · {zone.ability_name}")
-                st.write(f"Most common cast: **{zone.agent.title()}** · {zone.player_name}")
-                st.caption(
-                    f"Used in {zone.rounds_used} of {zone.total_rounds} {selected_side} rounds "
-                    f"({zone.percentage:.0f}%) on {map_name.title()} across {zone.series_count} series."
-                )
-                st.divider()
+                with st.container(border=True):
+                    st.markdown(f"**{index}. {zone.site_label} · {zone.ability_name}**")
+                    st.write(f"Most common cast: **{zone.agent.title()}** · {zone.player_name}")
+                    st.caption(
+                        f"Used in {zone.rounds_used:,} of {zone.total_rounds:,} {selected_side} rounds "
+                        f"({zone.percentage:.0f}%) on {map_name.title()} across {zone.series_count:,} series."
+                    )
     with st.expander("Observed agent / ability mapping"):
         st.dataframe(ability_mapping(casts), width="stretch", hide_index=True)
         st.caption(
@@ -879,10 +935,10 @@ def _render_utility_tab(tables, team_name, team_id, map_name, selected_side, sid
 
 
 def _render_operator_tab(
-    tables, team_name, team_id, map_name, selected_side, shapes, site_centres, report_html,
+    tables, team_name, team_id, map_name, selected_side, shapes, site_centres, report_data,
     spawn_estimates=None,
 ):
-    _download_report(report_html, "operator")
+    _download_report(report_data, "operator")
     rounds, buys = tables["rounds"], tables["buys"]
     rates = calculate_buy_rates(rounds, buys, team_id, map_name)
     selected_side_key = "attacker" if selected_side == "attack" else "defender"
@@ -914,7 +970,8 @@ def _render_operator_tab(
     )
     st.markdown(f"**{team_name} Operator profile · {display_map}**")
     if headline:
-        st.markdown(f"**{headline}**")
+        with st.container(border=True):
+            st.markdown(f"**{headline}**")
     metrics = st.columns(4)
     metrics[0].metric("Series" if map_name == "All maps" else "Map series", f"{series_count:,}")
     metrics[1].metric("Team rounds", f"{eligible_count:,}")
@@ -922,9 +979,9 @@ def _render_operator_tab(
     metrics[3].metric("Operator rounds", f"{overall['held_rounds']:,}")
     st.caption(f"Buy snapshot coverage: {observed_count:,} of {eligible_count:,} team rounds.")
     if observed_count < 20:
-        st.warning(f"Small sample: only {observed_count} rounds have a recorded freeze-time buy snapshot.")
+        st.warning(f"Small sample: only {observed_count:,} rounds have a recorded freeze-time buy snapshot.")
     if selected_eligible_count < 20:
-        st.warning(f"Small sample: only {selected_eligible_count} team rounds are in the selected {selected_side} filter.")
+        st.warning(f"Small sample: only {selected_eligible_count:,} team rounds are in the selected {selected_side} filter.")
 
     rate_columns = st.columns(3)
     for column, label, summary in (
@@ -932,8 +989,13 @@ def _render_operator_tab(
         (rate_columns[1], "Attack buy rate", rates["by_side"].get("attacker", {"held_rounds": 0, "observed_rounds": 0, "eligible_rounds": 0, "rate": 0})),
         (rate_columns[2], "Defense buy rate", rates["by_side"].get("defender", {"held_rounds": 0, "observed_rounds": 0, "eligible_rounds": 0, "rate": 0})),
     ):
-        column.metric(label, f"{summary['held_rounds']} / {summary['observed_rounds']} ({summary['rate']:.0f}%)")
-        column.caption(f"Buy snapshots: {summary['observed_rounds']} / {summary['eligible_rounds']} rounds")
+        column.metric(
+            label,
+            f"{int(summary['held_rounds']):,} / {int(summary['observed_rounds']):,} ({summary['rate']:.0f}%)",
+        )
+        column.caption(
+            f"Buy snapshots: {int(summary['observed_rounds']):,} / {int(summary['eligible_rounds']):,} rounds",
+        )
 
     st.subheader("Who buys the Operator")
     player_column, agent_column = st.columns(2)
@@ -947,13 +1009,19 @@ def _render_operator_tab(
         st.markdown(f"**Per player · {selected_side} Operator rounds**")
         st.dataframe(
             player_shares, width="stretch", hide_index=True,
-            column_config={"Share": st.column_config.ProgressColumn("Share", format="%.0f%%", min_value=0, max_value=100)},
+            column_config={
+                "Rounds": st.column_config.NumberColumn("Rounds", format="localized"),
+                "Share": st.column_config.ProgressColumn("Share", format="%.0f%%", min_value=0, max_value=100),
+            },
         )
     with agent_column:
         st.markdown(f"**Per agent · {selected_side} Operator rounds**")
         st.dataframe(
             agent_shares, width="stretch", hide_index=True,
-            column_config={"Share": st.column_config.ProgressColumn("Share", format="%.0f%%", min_value=0, max_value=100)},
+            column_config={
+                "Rounds": st.column_config.NumberColumn("Rounds", format="localized"),
+                "Share": st.column_config.ProgressColumn("Share", format="%.0f%%", min_value=0, max_value=100),
+            },
         )
 
     st.subheader(f"Possession · {selected_side.title()} rounds")
@@ -966,14 +1034,14 @@ def _render_operator_tab(
     )
     st.metric(
         "Handoff rate between consecutive Operator rounds",
-        f"{handoff['handoffs']} / {handoff['comparisons']} ({handoff['rate']:.0f}%)",
+        f"{handoff['handoffs']:,} / {handoff['comparisons']:,} ({handoff['rate']:.0f}%)",
     )
     st.caption("A handoff is a different holder set between successive Operator rounds; comparisons reset each game and across missing snapshots.")
 
     st.subheader("Defense setup positions and engagements")
     st.caption("Operator-holder kill/damage encounters only; times are measured from round-ended-freezetime.")
     if len(engagements) < 20:
-        st.warning(f"Small sample: {len(engagements)} deduplicated Operator engagements on defense.")
+        st.warning(f"Small sample: {len(engagements):,} deduplicated Operator engagements on defense.")
     if map_name == "All maps":
         st.info("Pick one map in the Map filter to view the engagement map; All maps is used for aggregate timing evidence only.")
     elif shapes.get(map_name) is None:
@@ -993,8 +1061,20 @@ def _render_operator_tab(
         st.info("No player has 10 or more defense engagements in this filter; per-player angle profiles are withheld.")
     else:
         display_aggression = profiled_players.drop(columns=["player_id"], errors="ignore")
-        st.dataframe(display_aggression, width="stretch", hide_index=True)
-    st.caption(f"Engagement sample: {len(engagements)} defense engagements; time buckets omit unknown times.")
+        st.dataframe(
+            display_aggression, width="stretch", hide_index=True,
+            column_config={
+                "engagements": st.column_config.NumberColumn("Engagements", format="localized"),
+                "aggressive": st.column_config.NumberColumn("Aggressive", format="localized"),
+                "standard": st.column_config.NumberColumn("Standard", format="localized"),
+                "passive": st.column_config.NumberColumn("Passive", format="localized"),
+                "unknown": st.column_config.NumberColumn("Unknown", format="localized"),
+                "aggressive_share": st.column_config.ProgressColumn(
+                    "Aggressive share", format="%.0f%%", min_value=0, max_value=100,
+                ),
+            },
+        )
+    st.caption(f"Engagement sample: {len(engagements):,} defense engagements; time buckets omit unknown times.")
     st.caption(
         "Possession is sampled at round-ended-freezetime and does not track later pickups or drops. "
         "Rapid damage ticks against one player are grouped with a resulting kill when within 1.5 seconds."
@@ -1002,10 +1082,10 @@ def _render_operator_tab(
 
 
 def _render_counter_plan_tab(
-    tables, team_name, team_id, map_name, selected_side, side, site_centres, report_html,
+    tables, team_name, team_id, map_name, selected_side, side, site_centres, report_data,
     spawn_estimates=None,
 ):
-    _download_report(report_html, "counter")
+    _download_report(report_data, "counter")
     denominator = eligible_rounds(tables["rounds"], team_id, map_name, side)
     round_count = denominator[["series_id", "game_id", "round_number"]].drop_duplicates().shape[0]
     series_count = int(denominator["series_id"].nunique())
@@ -1015,7 +1095,7 @@ def _render_counter_plan_tab(
     evidence[0].metric("Series analysed", f"{series_count:,}")
     evidence[1].metric("Rounds analysed", f"{round_count:,}")
     if round_count < 20:
-        st.warning(f"Small sample: only {round_count} {selected_side} rounds match this team/map/side selection.")
+        st.warning(f"Small sample: only {round_count:,} {selected_side} rounds match this team/map/side selection.")
     st.caption(
         "Utility tendencies use this map; Operator-holder and buy-rate evidence pools all maps for the selected side. "
         "All card templates are generated locally."
@@ -1192,11 +1272,17 @@ def main():
     except FileNotFoundError as error:
         st.error(f"Cache file missing: {error.filename or error}. Rebuild it with `uv run python build_cache.py --all`.")
         st.stop()
-    report_html = _cached_scouting_report(
-        (signature, (CACHE_DIR / "map_shapes.npz").stat().st_mtime_ns, spawn_signature),
+    report_data = _scouting_report_download_data(
+        (
+            signature,
+            (CACHE_DIR / "map_shapes.npz").stat().st_mtime_ns,
+            (CACHE_DIR / "site_centres.json").stat().st_mtime_ns,
+            spawn_signature,
+        ),
         date.today().isoformat(), selected_team["team_name"], team_id, map_name,
         selected_side, side, tables, shapes, site_centres, spawn_estimates,
     )
+    _render_app_style()
     title_col, badge_col = st.columns([5, 1])
     title_col.title("Scout Sheet")
     if selected_team["team_name"] in {"Cloud9", "Cloud9 GC"}:
@@ -1205,7 +1291,8 @@ def main():
             'background: #164e63; color: #cffafe; font-weight: 700; text-align: center;">Self-scout</div>',
             unsafe_allow_html=True,
         )
-    st.caption("VALORANT opponent scouting from local GRID-derived Parquet caches")
+    st.caption("VALORANT opponent scouting from official GRID match data")
+    _render_welcome_panel()
     if str(map_name).casefold() == "summit" and not site_centres.get("summit"):
         st.caption("Site labels are hidden for Summit because no verified plant-derived site centres are available.")
     utility_tab, operator_tab, counter_tab = st.tabs(
@@ -1215,20 +1302,26 @@ def main():
         if utility_tab.open:
             _render_utility_tab(
                 tables, selected_team["team_name"], team_id, map_name, selected_side, side,
-                shapes, site_centres, report_html,
+                shapes, site_centres, report_data,
             )
     with operator_tab:
         if operator_tab.open:
             _render_operator_tab(
                 tables, selected_team["team_name"], team_id, map_name, selected_side,
-                shapes, site_centres, report_html, spawn_estimates,
+                shapes, site_centres, report_data, spawn_estimates,
             )
     with counter_tab:
         if counter_tab.open:
             _render_counter_plan_tab(
                 tables, selected_team["team_name"], team_id, map_name, selected_side, side,
-                site_centres, report_html, spawn_estimates,
+                site_centres, report_data, spawn_estimates,
             )
+    st.markdown(
+        "<div style='margin-top: 2rem; padding-top: 0.8rem; border-top: 1px solid rgba(148,163,184,.3); "
+        "text-align: center; color: #94a3b8; font-size: .8rem;'>"
+        "Built with JetBrains PyCharm, Air and Junie · Data: GRID</div>",
+        unsafe_allow_html=True,
+    )
 
 
 if __name__ == "__main__":

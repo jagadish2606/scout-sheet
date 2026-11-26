@@ -41,17 +41,21 @@ class SiteCentreTests(unittest.TestCase):
             self.assertEqual(first, second)
             self.assertTrue((Path(directory) / "site_centres.json").is_file())
 
-    def test_duplicate_zone_titles_gain_direction_hints(self):
+    def test_only_duplicate_site_and_ability_labels_in_top_five_get_spot_numbers(self):
         zones = pd.DataFrame([
-            {"x": 0.0, "y": 500.0, "site_label": "A site"},
-            {"x": 500.0, "y": 0.0, "site_label": "A site"},
+            {"site_label": "A site", "ability": "trapwire"},
+            {"site_label": "A site", "ability": "trapwire"},
+            {"site_label": "A site", "ability": "spycam"},
+            {"site_label": "near B site", "ability": "trapwire"},
+            {"site_label": "A site", "ability": "trapwire"},
+            {"site_label": "A site", "ability": "trapwire"},
         ])
 
-        labeled = disambiguate_zone_labels(
-            zones, "Lotus", {"lotus": {"A": {"x": 0.0, "y": 0.0}}},
-        )
+        labeled = disambiguate_zone_labels(zones)
 
-        self.assertEqual(set(labeled["site_label"]), {"A site (north)", "A site (east)"})
+        self.assertEqual(labeled["site_label"].tolist(), [
+            "A site", "A site (2nd spot)", "A site", "near B site", "A site (3rd spot)", "A site",
+        ])
 
 
 if __name__ == "__main__":

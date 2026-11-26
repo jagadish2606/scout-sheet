@@ -91,7 +91,7 @@ def team_circuit_labels(rounds, event_by_series):
         series_count=("series_id", "nunique"),
     )
     teams["label"] = teams.apply(
-        lambda row: f"{row['team_name']} · {int(row['series_count'])} series",
+        lambda row: f"{row['team_name']} · {int(row['series_count']):,} series",
         axis=1,
     )
     circuit_order = {circuit: index for index, circuit in enumerate(CIRCUITS)}

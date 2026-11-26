@@ -45,6 +45,18 @@ class CircuitCatalogTests(unittest.TestCase):
         self.assertNotIn("c9", cloud9.iloc[0]["label"])
         self.assertEqual(labels.iloc[-1]["circuit"], "Game Changers – EMEA")
 
+    def test_team_labels_format_large_series_counts(self):
+        rounds = pd.DataFrame([
+            {"team_id": "c9", "team_name": "Cloud9", "series_id": str(series_id)}
+            for series_id in range(1234)
+        ])
+
+        labels = team_circuit_labels(
+            rounds, {str(series_id): "VCT Americas" for series_id in range(1234)},
+        )
+
+        self.assertEqual(labels.iloc[0]["label"], "Cloud9 · 1,234 series")
+
 
 if __name__ == "__main__":
     unittest.main()

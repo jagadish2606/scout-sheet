@@ -117,7 +117,7 @@ class ZonePercentageTests(unittest.TestCase):
         self.assertEqual(float(merged["percentage"]), 75.0)
         self.assertEqual(len(merged["cells"]), 3)
         self.assertEqual(len(trapwire_zones), 2)
-        self.assertNotEqual(trapwire_zones.iloc[0]["site_label"], trapwire_zones.iloc[1]["site_label"])
+        self.assertEqual(trapwire_zones["site_label"].tolist(), ["A site", "A site (2nd spot)"])
 
     def test_cells_within_six_metres_merge_by_edge_distance(self):
         casts = pd.DataFrame([

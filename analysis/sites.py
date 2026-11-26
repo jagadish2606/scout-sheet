@@ -2,9 +2,7 @@
 
 import hashlib
 import json
-import math
 from pathlib import Path
-import re
 
 import numpy as np
 import pandas as pd
@@ -136,41 +134,19 @@ def site_label(map_name, x, y, site_centres):
     return "mid"
 
 
-def disambiguate_zone_labels(zones, map_name, site_centres):
-    """Append a compass hint when independent zones would otherwise share a title."""
+def disambiguate_zone_labels(zones, map_name=None, site_centres=None, limit=5):
+    """Add a spot number to repeated site-and-ability labels in the leading zones."""
     labeled = zones.copy()
-    if labeled.empty or "site_label" not in labeled:
+    if labeled.empty or not {"site_label", "ability"}.issubset(labeled.columns):
         return labeled
-    map_sites = site_centres.get(str(map_name).casefold(), {})
-    duplicated = labeled["site_label"].duplicated(keep=False)
-    for label, indices in labeled[duplicated].groupby("site_label", sort=False).groups.items():
-        indices = list(indices)
-        match = re.search(r"(?:near\s+)?([A-Z])\s+site", str(label), flags=re.IGNORECASE)
-        if match and match.group(1).upper() in map_sites:
-            site = map_sites[match.group(1).upper()]
-            anchor_x, anchor_y = float(site["x"]), float(site["y"])
-        elif map_sites:
-            anchor_x = sum(float(site["x"]) for site in map_sites.values()) / len(map_sites)
-            anchor_y = sum(float(site["y"]) for site in map_sites.values()) / len(map_sites)
-        else:
-            anchor_x = float(labeled.loc[indices, "x"].median())
-            anchor_y = float(labeled.loc[indices, "y"].median())
-
-        directions = []
-        for index in indices:
-            dx = float(labeled.at[index, "x"]) - anchor_x
-            dy = float(labeled.at[index, "y"]) - anchor_y
-            angle = (math.degrees(math.atan2(dy, dx)) + 360) % 360
-            directions.append((index, ("east", "north-east", "north", "north-west", "west",
-                                       "south-west", "south", "south-east")[int((angle + 22.5) // 45) % 8]))
-        counts = {}
-        for _, direction in directions:
-            counts[direction] = counts.get(direction, 0) + 1
-        seen = {}
-        for index, direction in directions:
-            seen[direction] = seen.get(direction, 0) + 1
-            hint = f"{direction} {seen[direction]}" if counts[direction] > 1 else direction
-            labeled.at[index, "site_label"] = f"{label} ({hint})"
+    visible = labeled.head(limit)
+    grouped = visible.groupby(["site_label", "ability"], dropna=False, sort=False).groups
+    for (label, _ability), indices in grouped.items():
+        for spot_number, index in enumerate(indices, start=1):
+            if spot_number == 1:
+                continue
+            ordinal = "2nd" if spot_number == 2 else "3rd" if spot_number == 3 else f"{spot_number}th"
+            labeled.at[index, "site_label"] = f"{label} ({ordinal} spot)"
     return labeled
 
 

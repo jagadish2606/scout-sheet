@@ -13,14 +13,15 @@ class ScoutingReportTests(unittest.TestCase):
     def test_zone_rows_separate_ability_and_agent_names(self):
         zones = pd.DataFrame([{
             "site_label": "B site", "ability_name": "Shear", "agent": "vyse",
-            "player_name": "OXY", "rounds_used": 12, "total_rounds": 20,
-            "percentage": 60.0, "series_count": 3,
+            "player_name": "OXY", "rounds_used": 1234, "total_rounds": 2500,
+            "percentage": 49.36, "series_count": 12,
         }])
 
         markup = _zone_rows(zones, "defense", "Lotus")
 
         self.assertIn("<b>B site</b><span class='ability-name'>Shear</span>", markup)
         self.assertIn("<b>Agent:</b> Vyse", markup)
+        self.assertIn("1,234/2,500 defense rounds (49%), 12 series", markup)
         self.assertNotIn("ShearVyse", markup)
     @staticmethod
     def _fixtures():
