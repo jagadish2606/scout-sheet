@@ -13,8 +13,8 @@ for _category, _abilities in {
     },
     "damage": {
         "aftershock", "armageddon", "blast-pack", "boom-bot", "frag-ment", "guided-salvo",
-        "hot-hands", "hunter's-fury", "incendiary", "mosh-pit", "nanoswarm", "orbital-strike",
-        "paint-shells", "razorvine", "shock-bolt", "showstopper", "snake-bite", "turret",
+        "hot-hands", "hunter's-fury", "incendiary", "mosh-pit", "orbital-strike",
+        "paint-shells", "razorvine", "shock-bolt", "showstopper", "snake-bite",
     },
     "smoke": {
         "cloudburst", "cove", "dark-cover", "nebula-dissipate", "poison-cloud", "ruse",
@@ -42,7 +42,7 @@ for _category, _abilities in {
 
 _PLACEABLE_BY_AGENT = {
     "cypher": {"spycam", "trapwire"},
-    "killjoy": {"alarmbot"},
+    "killjoy": {"alarmbot", "nanoswarm", "turret"},
     "chamber": {"trademark"},
     "vyse": {"arc-rose", "shear"},
     "deadlock": {"sonic-sensor"},

@@ -1,5 +1,7 @@
 import math
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
@@ -13,6 +15,7 @@ from app import (
     _map_figure,
     _casts_for_position,
     _casts_for_arrow_zone,
+    _missing_prerequisites,
     _most_common_category,
     _operator_headline,
     _operator_strip_figure,
@@ -25,6 +28,20 @@ from app import (
 
 
 class UtilityMapAppTests(unittest.TestCase):
+    def test_setup_prerequisites_identify_missing_source_and_cache_tables(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            data_dir = root / "grid-data"
+            cache_dir = root / "cache"
+            data_dir.mkdir()
+            cache_dir.mkdir()
+            for name in ("rounds", "casts", "kills", "damage", "buys", "spawn_positions", "plants"):
+                (cache_dir / f"{name}.parquet").touch()
+
+            self.assertEqual(_missing_prerequisites(data_dir, cache_dir), (False, []))
+            (cache_dir / "casts.parquet").unlink()
+            self.assertEqual(_missing_prerequisites(data_dir, cache_dir), (False, ["casts"]))
+            self.assertEqual(_missing_prerequisites(root / "missing-grid", cache_dir), (True, ["casts"]))
     def test_team_possessive_handles_s_and_other_endings(self):
         self.assertEqual(team_possessive("G2 Esports"), "G2 Esports'")
         self.assertEqual(team_possessive("Cloud9"), "Cloud9's")
@@ -129,14 +146,18 @@ class UtilityMapAppTests(unittest.TestCase):
 
         landing_casts = _casts_for_position(casts, "Estimated landing")
         figure = _map_figure(
-            shape, landing_casts, zones, True, "Lotus", {}, "Estimated landing", arrow_zone=1,
+            shape, landing_casts, zones, True, "Lotus", {"lotus": {"A": {"x": 9.0, "y": 9.0}}},
+            "Estimated landing", arrow_zone=1,
         )
 
         self.assertEqual((landing_casts.loc[0, "x"], landing_casts.loc[0, "y"]), (8.0, 7.0))
         self.assertEqual((casts.loc[0, "x"], casts.loc[0, "y"]), (1.0, 1.0))
-        self.assertEqual(len(figure.layout.annotations), 1)
-        self.assertEqual((figure.layout.annotations[0].ax, figure.layout.annotations[0].ay), (1.0, 1.0))
-        self.assertEqual((figure.layout.annotations[0].x, figure.layout.annotations[0].y), (8.0, 7.0))
+        names = [trace.name for trace in figure.data]
+        arrow_trace = next(trace for trace in figure.data if trace.name == "Caster-to-estimate arrows")
+        self.assertEqual(list(arrow_trace.x[:2]), [1.0, 8.0])
+        self.assertLess(names.index("Individual casts"), names.index("Plant-derived site centres"))
+        self.assertLess(names.index("Caster-to-estimate arrows"), names.index("Plant-derived site centres"))
+        self.assertLess(names.index("Estimated landing points"), names.index("Top zones"))
 
     def test_arrow_zone_selection_and_fallback_sample_are_bounded(self):
         casts = pd.DataFrame([

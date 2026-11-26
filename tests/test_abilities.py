@@ -19,7 +19,7 @@ class AbilityMappingTests(unittest.TestCase):
         self.assertEqual(mapping.loc[("omen", "dark-cover"), "display_name"], "Dark Cover")
         self.assertEqual(mapping.loc[("astra", "stars"), "category"], "smoke")
         self.assertTrue(mapping.loc[("astra", "stars"), "remote_cast"])
-        self.assertEqual(mapping.loc[("killjoy", "nanoswarm"), "category"], "damage")
+        self.assertEqual(mapping.loc[("killjoy", "nanoswarm"), "category"], "placeable")
         self.assertEqual(mapping.loc[("cypher", "trapwire"), "agent_pair_flag"], "Shared ability ID across agents")
 
     def test_unknown_ability_has_safe_fallbacks(self):
@@ -43,8 +43,8 @@ class AbilityMappingTests(unittest.TestCase):
         for agent, ability in damaging:
             with self.subTest(agent=agent, ability=ability):
                 self.assertEqual(ability_category(ability, agent), "damage")
-        self.assertEqual(ability_category("nanoswarm", "killjoy"), "damage")
-        self.assertEqual(ability_category("turret", "killjoy"), "damage")
+        self.assertEqual(ability_category("nanoswarm", "killjoy"), "placeable")
+        self.assertEqual(ability_category("turret", "killjoy"), "placeable")
         self.assertEqual(ability_category("alarmbot", "killjoy"), "placeable")
         self.assertEqual(ability_category("shear", "vyse"), "placeable")
         self.assertEqual(ability_category("special-delivery", "neon"), "stall/wall")

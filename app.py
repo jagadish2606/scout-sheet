@@ -1,5 +1,6 @@
 import hashlib
 import math
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -19,9 +20,11 @@ from analysis.operator import (
     estimate_spawn_anchors,
     operator_engagements,
 )
+from analysis.report import generate_scouting_report
 from analysis.sites import label_zones, load_site_centres, site_label
 from analysis.text import team_possessive
 from analysis.zones import aggregate_zone_cells, eligible_rounds, filter_casts, match_casts_to_rounds
+from config import DATA_DIR
 
 
 PROJECT_DIR = Path(__file__).parent
@@ -44,6 +47,30 @@ def load_tables(signature):
 @st.cache_data(show_spinner="Building map position densities…")
 def load_shapes(casts, kills):
     return load_map_shapes(casts, kills, CACHE_DIR)
+
+
+@st.cache_data(show_spinner="Preparing printable scouting report…")
+def _cached_scouting_report(
+    cache_signature, generated_date, team_name, team_id, map_name, selected_side, side,
+    _tables, _shapes, _site_centres,
+):
+    return generate_scouting_report(
+        _tables, team_name, team_id, map_name, selected_side, side, _shapes, _site_centres,
+        generated_on=date.fromisoformat(generated_date),
+    )
+
+
+def _download_report(report_html, tab_key):
+    st.download_button(
+        "Download scouting report", report_html,
+        file_name="scout-sheet-scouting-report.html", mime="text/html",
+        key=f"download_scouting_report_{tab_key}",
+    )
+
+
+def _missing_prerequisites(data_dir=DATA_DIR, cache_dir=CACHE_DIR):
+    missing_cache = [name for name in TABLE_NAMES if not (Path(cache_dir) / f"{name}.parquet").is_file()]
+    return not Path(data_dir).is_dir(), missing_cache
 
 
 def _most_common(values):
@@ -253,12 +280,27 @@ def _map_figure(
         if show_dots:
             if position_mode == "Estimated landing" and {"caster_x", "caster_y", "estimated"}.issubset(located.columns):
                 estimated = _casts_for_arrow_zone(located, zones, arrow_zone)
+                arrow_x, arrow_y, arrow_head_angles = [], [], []
                 for cast in estimated.itertuples(index=False):
-                    figure.add_annotation(
-                        x=float(cast.x), y=float(cast.y), ax=float(cast.caster_x), ay=float(cast.caster_y),
-                        xref="x", yref="y", axref="x", ayref="y", showarrow=True,
-                        arrowhead=1, arrowsize=0.6, arrowwidth=0.6, arrowcolor="rgba(248,250,252,0.32)",
+                    caster_x, caster_y = float(cast.caster_x), float(cast.caster_y)
+                    landing_x, landing_y = float(cast.x), float(cast.y)
+                    arrow_x.extend((caster_x, landing_x, None))
+                    arrow_y.extend((caster_y, landing_y, None))
+                    arrow_head_angles.append(
+                        math.degrees(math.atan2(landing_y - caster_y, landing_x - caster_x)) + 90
                     )
+                if arrow_head_angles:
+                    figure.add_trace(go.Scatter(
+                        x=arrow_x, y=arrow_y, mode="lines",
+                        line={"width": 0.7, "color": "rgba(248,250,252,0.3)"},
+                        hoverinfo="skip", showlegend=False, name="Caster-to-estimate arrows",
+                    ))
+                    figure.add_trace(go.Scatter(
+                        x=estimated["x"], y=estimated["y"], mode="markers",
+                        marker={"size": 5, "color": "rgba(248,250,252,0.42)",
+                                "symbol": "triangle-up", "angle": arrow_head_angles},
+                        hoverinfo="skip", showlegend=False, name="Estimated landing arrowheads",
+                    ))
                 if not estimated.empty:
                     figure.add_trace(go.Scattergl(
                         x=estimated["x"], y=estimated["y"], mode="markers",
@@ -587,7 +629,8 @@ def _profile_engagements(kills, damage, buys, spawn_positions, team_id, map_name
     return engagements, player_summary
 
 
-def _render_utility_tab(tables, team_name, team_id, map_name, selected_side, side, shapes, site_centres):
+def _render_utility_tab(tables, team_name, team_id, map_name, selected_side, side, shapes, site_centres, report_html):
+    _download_report(report_html, "utility")
     rounds, casts, buys = tables["rounds"], tables["casts"], tables["buys"]
     denominator = eligible_rounds(rounds, team_id, map_name, side)
     matched, unmatched = match_casts_to_rounds(casts, denominator)
@@ -615,10 +658,12 @@ def _render_utility_tab(tables, team_name, team_id, map_name, selected_side, sid
     include_buy_phase = st.sidebar.toggle(
         "Include buy phase", value=True,
         help="Include casts with negative times, before the round-ended-freezetime event.",
+        key=f"include_buy_phase_{team_id}",
     )
     include_remote = st.sidebar.toggle(
         "Include remote casts", value=False,
         help="Remote abilities are excluded by default because caster position is not the utility location.",
+        key=f"include_remote_casts_{team_id}",
     )
     category_base_casts = filter_casts(
         matched, player_id=player_id, agent=agent, seconds_range=time_window,
@@ -641,7 +686,9 @@ def _render_utility_tab(tables, team_name, team_id, map_name, selected_side, sid
         key=category_widget_key,
     )
     st.session_state["ability_category"] = category
-    show_dots = st.sidebar.toggle("Show individual cast dots", value=False)
+    show_dots = st.sidebar.toggle(
+        "Show individual cast dots", value=False, key=f"show_cast_dots_{team_id}",
+    )
 
     filtered_casts = (
         category_base_casts if category == "all"
@@ -763,7 +810,8 @@ def _render_utility_tab(tables, team_name, team_id, map_name, selected_side, sid
         )
 
 
-def _render_operator_tab(tables, team_name, team_id, map_name, selected_side, shapes, site_centres):
+def _render_operator_tab(tables, team_name, team_id, map_name, selected_side, shapes, site_centres, report_html):
+    _download_report(report_html, "operator")
     rounds, buys = tables["rounds"], tables["buys"]
     rates = calculate_buy_rates(rounds, buys, team_id, map_name)
     selected_side_key = "attacker" if selected_side == "attack" else "defender"
@@ -879,7 +927,8 @@ def _render_operator_tab(tables, team_name, team_id, map_name, selected_side, sh
     )
 
 
-def _render_counter_plan_tab(tables, team_name, team_id, map_name, selected_side, side, site_centres):
+def _render_counter_plan_tab(tables, team_name, team_id, map_name, selected_side, side, site_centres, report_html):
+    _download_report(report_html, "counter")
     denominator = eligible_rounds(tables["rounds"], team_id, map_name, side)
     round_count = denominator[["series_id", "game_id", "round_number"]].drop_duplicates().shape[0]
     series_count = int(denominator["series_id"].nunique())
@@ -937,6 +986,22 @@ def _counter_confidence_badge(confidence):
 
 
 def main():
+    missing_data, missing_cache = _missing_prerequisites()
+    if missing_data or missing_cache:
+        st.title("Scout Sheet setup")
+        st.info("Scout Sheet needs the local GRID starter data and generated cache before it can show scouting views.")
+        st.markdown(
+            "1. Install `uv` using the [official installer](https://docs.astral.sh/uv/getting-started/installation/).\n"
+            "2. Clone Scout Sheet and the GRID starter repository into sibling folders.\n"
+            "3. From the Scout Sheet folder, run `uv sync`.\n"
+            "4. Run `uv run python build_cache.py` to create the ignored local Parquet cache.\n"
+            "5. Start the app with `uv run streamlit run app.py` and open `http://localhost:8501`."
+        )
+        if missing_data:
+            st.caption(f"GRID starter data folder not found at `{DATA_DIR}`.")
+        if missing_cache:
+            st.caption(f"Cache tables missing: {', '.join(missing_cache)}.")
+        st.stop()
     try:
         signature = tuple((CACHE_DIR / f"{name}.parquet").stat().st_mtime_ns for name in TABLE_NAMES)
         tables = load_tables(signature)
@@ -1003,6 +1068,10 @@ def main():
     shapes = load_shapes(casts, kills)
     plants = tables["plants"]
     site_centres = load_site_centres(plants, CACHE_DIR)
+    report_html = _cached_scouting_report(
+        signature, date.today().isoformat(), selected_team["team_name"], team_id, map_name,
+        selected_side, side, tables, shapes, site_centres,
+    )
     title_col, badge_col = st.columns([5, 1])
     title_col.title("Scout Sheet")
     if selected_team["team_name"] in {"Cloud9", "Cloud9 GC"}:
@@ -1018,17 +1087,20 @@ def main():
     with utility_tab:
         if utility_tab.open:
             _render_utility_tab(
-                tables, selected_team["team_name"], team_id, map_name, selected_side, side, shapes, site_centres,
+                tables, selected_team["team_name"], team_id, map_name, selected_side, side,
+                shapes, site_centres, report_html,
             )
     with operator_tab:
         if operator_tab.open:
             _render_operator_tab(
-                tables, selected_team["team_name"], team_id, map_name, selected_side, shapes, site_centres,
+                tables, selected_team["team_name"], team_id, map_name, selected_side,
+                shapes, site_centres, report_html,
             )
     with counter_tab:
         if counter_tab.open:
             _render_counter_plan_tab(
-                tables, selected_team["team_name"], team_id, map_name, selected_side, side, site_centres,
+                tables, selected_team["team_name"], team_id, map_name, selected_side, side,
+                site_centres, report_html,
             )
 
 
