@@ -9,35 +9,46 @@ from pathlib import Path
 import pandas as pd
 
 
-_REGIONS = (
-    ("North America", ("north america", "na", "north-america")),
-    ("Latin America North", ("latam north", "latin america north", "latam norte")),
-    ("Latin America South", ("latam south", "latin america south", "latam sur")),
-    ("Brazil", ("brazil", "brasil")),
-    ("EMEA", ("emea", "europe")),
-    ("Pacific", ("pacific", "apac", "asia pacific")),
-    ("Southeast Asia", ("southeast asia", "sea")),
-    ("Japan", ("japan", "jp")),
-    ("Korea", ("korea", "kr")),
-    ("China", ("china", "cn")),
-    ("Oceania", ("oceania", "anz")),
+GAME_CHANGERS_CIRCUITS = (
+    "Game Changers – North America",
+    "Game Changers – Brazil",
+    "Game Changers – Latin America",
+    "Game Changers – EMEA",
+    "Game Changers – Japan",
+    "Game Changers – Korea",
+    "Game Changers – Southeast Asia/Oceania",
+    "Game Changers – Championship",
 )
+CIRCUITS = ("VCT Americas", "Masters", *GAME_CHANGERS_CIRCUITS)
 
 
 def _contains_region(event, region_aliases):
-    padded = f" {re.sub(r'[^a-z0-9]+', ' ', event.casefold()).strip()} "
-    return any(f" {alias} " in padded for alias in region_aliases)
+    normalize = lambda value: re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+    padded = f" {normalize(event)} "
+    return any(f" {normalize(alias)} " in padded for alias in region_aliases)
 
 
 def circuit_for_event(event_name):
     event = str(event_name or "").strip()
     normalized = event.casefold()
     if "game changer" in normalized or "gamechanger" in normalized:
-        region = next(
-            (label for label, aliases in _REGIONS if _contains_region(event, aliases)),
-            "Region not specified",
-        )
-        return f"Game Changers · {region}"
+        if "championship" in normalized:
+            return "Game Changers – Championship"
+        if _contains_region(event, ("north america", "north american", "na", "gcna")):
+            return "Game Changers – North America"
+        if _contains_region(event, ("brazil", "brasil", " br ", "gcbr")):
+            return "Game Changers – Brazil"
+        if _contains_region(event, ("latin america", "latam", "latinoamerica", "gc latam")):
+            return "Game Changers – Latin America"
+        if _contains_region(event, ("emea", "europe", "middle east", "africa")):
+            return "Game Changers – EMEA"
+        if _contains_region(event, ("japan", "jpn", "jp", "gcjp")):
+            return "Game Changers – Japan"
+        if _contains_region(event, ("korea", "kr", "gckr")):
+            return "Game Changers – Korea"
+        if _contains_region(event, ("southeast asia", "sea", "oceania", "anz", "apac", "pacific")):
+            return "Game Changers – Southeast Asia/Oceania"
+        return "Other events"
     if "masters" in normalized:
         return "Masters"
     if "vct americas" in normalized:
@@ -46,11 +57,7 @@ def circuit_for_event(event_name):
         if token in normalized:
             return label
     if "challengers" in normalized:
-        region = next(
-            (label for label, aliases in _REGIONS if _contains_region(event, aliases)),
-            "Region not specified",
-        )
-        return f"Challengers · {region}"
+        return "Other events"
     if not event:
         return "Other events"
     return f"Other · {event}"
@@ -84,14 +91,14 @@ def team_circuit_labels(rounds, event_by_series):
         series_count=("series_id", "nunique"),
     )
     teams["label"] = teams.apply(
-        lambda row: f"{row['circuit']} · {row['team_name']} [{row['team_id']}] · "
-        f"{int(row['series_count'])} series",
+        lambda row: f"{row['team_name']} · {int(row['series_count'])} series",
         axis=1,
     )
-    priority = {"VCT Americas": 0, "Masters": 1}
-    teams["_circuit_order"] = teams["circuit"].map(priority).fillna(2)
+    circuit_order = {circuit: index for index, circuit in enumerate(CIRCUITS)}
+    teams["_circuit_order"] = teams["circuit"].map(circuit_order).fillna(len(circuit_order))
     return teams.sort_values(
-        ["_circuit_order", "circuit", "team_name", "team_id"],
-        key=lambda values: values.str.casefold() if values.name in {"circuit", "team_name", "team_id"} else values,
+        ["_circuit_order", "series_count", "team_name", "team_id"],
+        ascending=[True, False, True, True],
+        key=lambda values: values.str.casefold() if values.name in {"team_name", "team_id"} else values,
         kind="stable",
     ).drop(columns="_circuit_order").reset_index(drop=True)

@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 from analysis.extract import TABLE_COLUMNS
+from analysis.operator import load_spawn_estimates
 from analysis.incremental_cache import (
     bootstrap_existing_cache,
     combine_series_shards,
@@ -59,6 +60,24 @@ class IncrementalCacheTests(unittest.TestCase):
             self.assertTrue(series_is_complete(shard_root, "series-2"))
             self.assertEqual(len(read_series_table(shard_root, "series-2", "rounds")), 1)
             self.assertEqual(len(read_series_table(shard_root, "series-2", "casts")), 0)
+
+    def test_cache_builder_persists_global_spawn_estimates(self):
+        from build_cache import _save_spawn_estimates
+
+        positions = pd.DataFrame([
+            {"map": "Lotus", "side": "defender", "x": 1.0, "y": 2.0},
+            {"map": "Lotus", "side": "defender", "x": 3.0, "y": 4.0},
+            {"map": "Lotus", "side": "attacker", "x": 9.0, "y": 8.0},
+        ])
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            anchors = _save_spawn_estimates(positions, temporary_directory)
+            path = Path(temporary_directory) / "spawn_estimates.json"
+
+            self.assertEqual(anchors["lotus"]["defender"], (2.0, 3.0))
+            self.assertEqual(
+                load_spawn_estimates(path),
+                {"lotus": {"defender": (2.0, 3.0), "attacker": (9.0, 8.0)}},
+            )
 
 
 if __name__ == "__main__":

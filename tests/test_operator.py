@@ -1,4 +1,7 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 import pandas as pd
 
@@ -8,6 +11,7 @@ from analysis.operator import (
     calculate_buy_rates,
     calculate_handoff_rate,
     estimate_spawn_anchors,
+    load_spawn_estimates,
     operator_engagements,
 )
 
@@ -161,6 +165,20 @@ class OperatorAnalysisTests(unittest.TestCase):
         anchors = estimate_spawn_anchors(positions)
         self.assertEqual(anchors["lotus"]["defender"], (2.0, 12.0))
         self.assertEqual(anchors["lotus"]["attacker"], (100.0, 200.0))
+
+    def test_full_data_spawn_estimates_load_case_insensitive_maps_and_coordinate_forms(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "spawn_estimates.json"
+            path.write_text(json.dumps({
+                "maps": {
+                    "Lotus": {"defender": [1, 2], "attacker": {"x": 9, "y": 8}},
+                    "Bad": {"defender": ["not-a-number", 2]},
+                },
+            }), encoding="utf-8")
+
+            estimates = load_spawn_estimates(path)
+
+        self.assertEqual(estimates, {"lotus": {"defender": (1.0, 2.0), "attacker": (9.0, 8.0)}})
 
     def test_operator_engagements_require_freeze_time_holder_and_deduplicate_ticks(self):
         buys = pd.DataFrame([

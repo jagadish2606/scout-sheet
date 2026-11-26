@@ -2,7 +2,8 @@ import unittest
 
 import pandas as pd
 
-from analysis.zones import calculate_zone_percentage, filter_casts
+from analysis.sites import disambiguate_zone_labels, label_zones
+from analysis.zones import aggregate_zone_cells, calculate_zone_percentage, filter_casts, merge_zone_cells
 
 
 class ZonePercentageTests(unittest.TestCase):
@@ -89,7 +90,49 @@ class ZonePercentageTests(unittest.TestCase):
         ])
         zone = calculate_zone_percentage(self.rounds, casts, "team-a", "Lotus", "defender").iloc[0]
         self.assertEqual((zone["ability"], zone["agent"], zone["player_name"]), ("spycam", "cypher", "Player Two"))
-        self.assertEqual(zone["rounds_used"], 3)
+        self.assertEqual(zone["rounds_used"], 2)
+
+    def test_adjacent_cells_merge_transitively_and_union_distinct_rounds(self):
+        casts = pd.DataFrame([
+            self._cast("s1", "g1", 1, 100, 100, "Player One"),
+            self._cast("s1", "g1", 1, 500, 100, "Player One"),
+            self._cast("s1", "g1", 2, 500, 100, "Player One"),
+            self._cast("s1", "g1", 3, 900, 100, "Player Two"),
+            self._cast("s2", "g3", 1, 2100, 100, "Player Two"),
+            self._cast("s1", "g1", 2, 500, 100, "Player Two", ability="spycam"),
+        ])
+        centres = {"lotus": {"A": {"x": 1000.0, "y": 100.0}}}
+
+        denominator = self.rounds[
+            self.rounds["team_id"].eq("team-a") & self.rounds["map"].eq("Lotus")
+        ]
+        cells = label_zones(aggregate_zone_cells(casts, denominator), "Lotus", centres)
+        zones = merge_zone_cells(cells)
+        zones = disambiguate_zone_labels(zones, "Lotus", centres)
+        trapwire_zones = zones[zones["ability"].eq("trapwire")]
+        merged = trapwire_zones.iloc[0]
+
+        self.assertEqual(int(merged["rounds_used"]), 3)
+        self.assertEqual(int(merged["total_rounds"]), 4)
+        self.assertEqual(float(merged["percentage"]), 75.0)
+        self.assertEqual(len(merged["cells"]), 3)
+        self.assertEqual(len(trapwire_zones), 2)
+        self.assertNotEqual(trapwire_zones.iloc[0]["site_label"], trapwire_zones.iloc[1]["site_label"])
+
+    def test_cells_within_six_metres_merge_by_edge_distance(self):
+        casts = pd.DataFrame([
+            self._cast("s1", "g1", 1, 100, 100, "Player One"),
+            self._cast("s1", "g1", 2, 900, 900, "Player One"),
+            self._cast("s1", "g2", 1, 2100, 100, "Player One"),
+        ])
+        cells = aggregate_zone_cells(casts, self.rounds)
+        cells["site_label"] = "mid"
+
+        zones = merge_zone_cells(cells)
+
+        self.assertEqual(len(zones), 2)
+        self.assertEqual(zones.iloc[0]["rounds_used"], 2)
+        self.assertEqual(set(zones.iloc[0]["cells"]), {(0, 0), (2, 2)})
 
 
 if __name__ == "__main__":

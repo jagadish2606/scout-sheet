@@ -1,5 +1,6 @@
 import argparse
 import csv
+import json
 import os
 import time
 from collections import defaultdict
@@ -17,6 +18,7 @@ from analysis.landing import (
     print_landing_sanity_report,
 )
 from analysis.map_shape import load_map_shapes
+from analysis.operator import estimate_spawn_anchors
 from analysis.sites import load_site_centres
 from config import DATA_DIR
 from analysis.incremental_cache import (
@@ -145,6 +147,21 @@ def _table_bytes(cache_dir):
     )
 
 
+def _save_spawn_estimates(spawn_positions, cache_dir):
+    anchors = estimate_spawn_anchors(spawn_positions)
+    payload = {
+        "source": "spawn_positions.parquet",
+        "method": "per-map and per-side median freeze-end player position",
+        "source_rows": int(len(spawn_positions)),
+        "maps": anchors,
+    }
+    destination = Path(cache_dir) / "spawn_estimates.json"
+    temporary = destination.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+    os.replace(temporary, destination)
+    return anchors
+
+
 def build_all_cache(limit=None, data_dir=DATA_DIR, cache_dir=None, workers=None):
     """Incrementally extract all VALORANT series and publish consolidated Parquet tables."""
     data_dir = Path(data_dir)
@@ -212,11 +229,14 @@ def build_all_cache(limit=None, data_dir=DATA_DIR, cache_dir=None, workers=None)
     row_counts, byte_counts = combine_series_shards(valid_ids, shard_root, cache_dir)
     plants = pd.read_parquet(cache_dir / "plants.parquet")
     site_centres = load_site_centres(plants, cache_dir)
+    spawn_positions = pd.read_parquet(cache_dir / "spawn_positions.parquet")
+    spawn_anchors = _save_spawn_estimates(spawn_positions, cache_dir)
     finalization_elapsed = time.perf_counter() - finalization_started
     print("Final table rows:")
     for table_name, row_count in row_counts.items():
         print(f"  {table_name}: {row_count:,} ({byte_counts[table_name] / (1024 ** 2):.1f} MiB)")
     print(f"Site centres: {sum(len(sites) for sites in site_centres.values()):,} across {len(site_centres):,} maps")
+    print(f"Full-data spawn estimates: {len(spawn_anchors):,} maps -> {cache_dir / 'spawn_estimates.json'}")
     print(f"Completed series: {len(valid_ids):,}/{len(all_ids):,}; failed this run: {len(failures):,}")
     for series_id, reason in failures:
         print(f"  {series_id}: {reason}")
@@ -316,6 +336,7 @@ def build_cache(series_ids=None, limit=None, data_dir=DATA_DIR, cache_dir=None, 
             print(f"Sample {table_name} (first {min(sample_rows, len(frame))} rows):")
             print(frame[sample_columns].head(sample_rows).to_string(index=False, max_colwidth=22))
     site_centres = load_site_centres(final["plants"], cache_dir)
+    _save_spawn_estimates(final["spawn_positions"], cache_dir)
     print(f"Site centres: {sum(len(sites) for sites in site_centres.values()):,} across {len(site_centres):,} maps")
     return final
 

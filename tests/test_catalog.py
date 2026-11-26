@@ -11,11 +11,17 @@ class CircuitCatalogTests(unittest.TestCase):
         self.assertEqual(circuit_for_event("Masters Bangkok 2025"), "Masters")
         self.assertEqual(
             circuit_for_event("VCT Game Changers North America Stage 1"),
-            "Game Changers · North America",
+            "Game Changers – North America",
         )
         self.assertEqual(
-            circuit_for_event("Game Changers Brazil Series"), "Game Changers · Brazil",
+            circuit_for_event("Game Changers BR - Split 1 2026"), "Game Changers – Brazil",
         )
+        self.assertEqual(circuit_for_event("Game Changers LATAM - Split 2 2026"), "Game Changers – Latin America")
+        self.assertEqual(circuit_for_event("Game Changers JPN - Split 1 2026"), "Game Changers – Japan")
+        self.assertEqual(circuit_for_event("Game Changers KR - Split 1 2026"), "Game Changers – Korea")
+        self.assertEqual(circuit_for_event("Game Changers NA - Split 1 2026"), "Game Changers – North America")
+        self.assertEqual(circuit_for_event("Game Changers Pacific - 2025"), "Game Changers – Southeast Asia/Oceania")
+        self.assertEqual(circuit_for_event("Game Changers Championship - 2025"), "Game Changers – Championship")
 
     def test_team_choices_are_grouped_by_circuit_with_distinct_series_counts(self):
         rounds = pd.DataFrame([
@@ -35,8 +41,9 @@ class CircuitCatalogTests(unittest.TestCase):
         cloud9 = labels[labels["team_id"].eq("c9")]
         self.assertEqual(cloud9["circuit"].tolist(), ["VCT Americas", "Masters"])
         self.assertEqual(cloud9["series_count"].tolist(), [2, 1])
-        self.assertIn("VCT Americas · Cloud9 [c9] · 2 series", cloud9.iloc[0]["label"])
-        self.assertEqual(labels.iloc[-1]["circuit"], "Game Changers · EMEA")
+        self.assertEqual(cloud9.iloc[0]["label"], "Cloud9 · 2 series")
+        self.assertNotIn("c9", cloud9.iloc[0]["label"])
+        self.assertEqual(labels.iloc[-1]["circuit"], "Game Changers – EMEA")
 
 
 if __name__ == "__main__":

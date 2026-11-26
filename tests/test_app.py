@@ -16,6 +16,7 @@ from app import (
     _casts_for_position,
     _casts_for_arrow_zone,
     _missing_prerequisites,
+    _map_for_team,
     _most_common_category,
     _operator_headline,
     _operator_strip_figure,
@@ -28,6 +29,16 @@ from app import (
 
 
 class UtilityMapAppTests(unittest.TestCase):
+    def test_map_resets_only_on_team_change_when_below_twenty_rounds(self):
+        counts = pd.Series({"Lotus": 120, "Fracture": 18})
+        options = ["Lotus", "Fracture"]
+
+        self.assertEqual(_map_for_team("Fracture", options, counts, "Lotus", False), "Fracture")
+        self.assertEqual(_map_for_team("Fracture", options, counts, "Lotus", True), "Lotus")
+        self.assertEqual(_map_for_team("Lotus", options, counts, "Fracture", True), "Lotus")
+        self.assertEqual(_map_for_team("All maps", ["All maps", *options], counts, "Lotus", True), "All maps")
+        self.assertEqual(_map_for_team("Unknown", options, counts, "Lotus", False), "Lotus")
+
     def test_setup_prerequisites_identify_missing_source_and_cache_tables(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -166,16 +177,20 @@ class UtilityMapAppTests(unittest.TestCase):
             {
                 "x": float(index * 400 + 1), "y": 1.0, "caster_x": float(index * 400),
                 "caster_y": 1.0, "estimated": True,
+                "ability": "trapwire" if index in {2, 3} else "spycam",
             }
             for index in range(100)
         ])
-        zones = pd.DataFrame([{"cell_x": 3, "cell_y": 0}])
+        zones = pd.DataFrame([{
+            "cell_x": 2, "cell_y": 0, "ability": "trapwire", "cells": ((2, 0), (3, 0)),
+        }])
 
         selected = _casts_for_arrow_zone(casts, zones, selected_zone=1)
         sample = _casts_for_arrow_zone(casts, zones, selected_zone=None)
 
-        self.assertEqual(len(selected), 1)
-        self.assertEqual(math.floor(selected.iloc[0]["x"] / 400), 3)
+        self.assertEqual(len(selected), 2)
+        self.assertEqual(set((selected["x"] / 400).map(math.floor)), {2, 3})
+        self.assertEqual(set(selected["ability"]), {"trapwire"})
         self.assertEqual(len(sample), 80)
 
     def test_category_counts_and_switch_target(self):

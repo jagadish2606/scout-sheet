@@ -162,7 +162,7 @@ def _utility_cards(rounds, casts, team_id, team_name, map_name, side, site_centr
 
 def _operator_cards(
     rounds, buys, kills, damage, spawn_positions, team_id, team_name, map_name, side,
-    site_centres, self_scout,
+    site_centres, self_scout, spawn_estimates=None,
 ):
     all_rates = calculate_buy_rates(rounds, buys, team_id, "All maps")
     side_key = side
@@ -195,10 +195,12 @@ def _operator_cards(
             late_count = int(live_times.ge(20).sum())
 
             anchors = estimate_spawn_anchors(spawn_positions)
+            full_anchors = spawn_estimates or {}
             labels = []
             locations = []
             for event in engagements.itertuples(index=False):
-                map_anchors = anchors.get(str(event.map).casefold(), {})
+                map_key = str(event.map).casefold()
+                map_anchors = full_anchors.get(map_key, anchors.get(map_key, {}))
                 defender_spawn = map_anchors.get("defender")
                 attacker_spawn = map_anchors.get("attacker")
                 score = (
@@ -362,25 +364,25 @@ def _operator_cards(
 
 def generate_counter_cards(
     rounds, casts, buys, kills, damage, spawn_positions, team_id, team_name, map_name, side,
-    site_centres=None, self_scout=False,
+    site_centres=None, self_scout=False, spawn_estimates=None,
 ):
     """Build strong local rule-based cards, ordered by confidence and prevalence."""
     return generate_counter_plan(
         rounds, casts, buys, kills, damage, spawn_positions, team_id, team_name, map_name,
-        side, site_centres, self_scout,
+        side, site_centres, self_scout, spawn_estimates,
     )["cards"]
 
 
 def generate_counter_plan(
     rounds, casts, buys, kills, damage, spawn_positions, team_id, team_name, map_name, side,
-    site_centres=None, self_scout=False,
+    site_centres=None, self_scout=False, spawn_estimates=None,
 ):
     """Build ranked strong tendencies and lower-confidence watch-list entries."""
     site_centres = site_centres or {}
     cards = _utility_cards(rounds, casts, team_id, team_name, map_name, side, site_centres, self_scout)
     cards.extend(_operator_cards(
         rounds, buys, kills, damage, spawn_positions, team_id, team_name, map_name, side,
-        site_centres, self_scout,
+        site_centres, self_scout, spawn_estimates,
     ))
     sort_key = lambda card: (card["confidence_order"], -card["frequency"], card["type"], card["tendency"])
     strong = sorted((card for card in cards if card["confidence"] != "Low"), key=sort_key)

@@ -1,6 +1,8 @@
 """Round-based Operator possession and engagement analysis."""
 
+import json
 import math
+from pathlib import Path
 
 import pandas as pd
 
@@ -184,6 +186,34 @@ def estimate_spawn_anchors(spawn_positions):
         result.setdefault(str(map_name), {})[str(side)] = (
             float(group["x"].median()), float(group["y"].median()),
         )
+    return result
+
+
+def load_spawn_estimates(path):
+    """Load persisted full-data anchors as case-folded map/side coordinate tuples."""
+    try:
+        with Path(path).open(encoding="utf-8") as file:
+            data = json.load(file)
+    except (OSError, ValueError):
+        return {}
+    maps = data.get("maps", data) if isinstance(data, dict) else {}
+    result = {}
+    for map_name, sides in maps.items():
+        if not isinstance(sides, dict):
+            continue
+        anchors = {}
+        for side, point in sides.items():
+            try:
+                if isinstance(point, dict):
+                    coordinate = (float(point["x"]), float(point["y"]))
+                else:
+                    coordinate = (float(point[0]), float(point[1]))
+            except (TypeError, ValueError, IndexError, KeyError):
+                continue
+            if all(math.isfinite(value) for value in coordinate):
+                anchors[str(side).casefold()] = coordinate
+        if anchors:
+            result[str(map_name).casefold()] = anchors
     return result
 
 

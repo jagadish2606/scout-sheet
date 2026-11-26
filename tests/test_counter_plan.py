@@ -229,6 +229,19 @@ class CounterPlanTests(unittest.TestCase):
         self.assertIn("early, aggressive Op", card["response"])
         self.assertIn("first 20 s", card["response"])
 
+    def test_operator_cards_prefer_saved_full_data_anchors_over_team_proxy(self):
+        rounds, buys, kills, spawn_positions = self._operator_profile_tables(early=True)
+
+        plan = generate_counter_plan(
+            rounds, pd.DataFrame(), buys, kills, pd.DataFrame(), spawn_positions,
+            "c9", "G2 Esports", "Ascent", "defender",
+            spawn_estimates={"ascent": {"defender": (1000.0, 0.0), "attacker": (0.0, 0.0)}},
+        )
+        card = next(card for card in plan["cards"] if card["type"] == "Operator")
+
+        self.assertIn("early, aggressive Op", card["response"])
+        self.assertIn("aggressive", " ".join(card["facts"]))
+
     def test_operator_mixed_profile_mentions_both_early_and_late_patterns(self):
         rounds, buys, kills, spawn_positions = self._operator_profile_tables()
         kills.loc[:4, "seconds_into_round"] = 5

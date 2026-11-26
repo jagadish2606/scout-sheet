@@ -13,8 +13,8 @@ import plotly.graph_objects as go
 from analysis.counter_plan import generate_counter_plan
 from analysis.landing import build_walkable_mask
 from analysis.operator import calculate_buy_rates
-from analysis.sites import label_zones
-from analysis.zones import aggregate_zone_cells, eligible_rounds, filter_casts, match_casts_to_rounds
+from analysis.sites import disambiguate_zone_labels, label_zones
+from analysis.zones import aggregate_zone_cells, eligible_rounds, filter_casts, match_casts_to_rounds, merge_zone_cells
 
 
 def _report_map(rounds, team_id, map_name, side):
@@ -124,11 +124,12 @@ def _operator_summary(rounds, buys, team_id, map_name, selected_side, team_name)
     )
 
 
-def _counter_cards(tables, team_name, team_id, map_name, utility_map, side, site_centres):
+def _counter_cards(tables, team_name, team_id, map_name, utility_map, side, site_centres, spawn_estimates=None):
     plan = generate_counter_plan(
         tables["rounds"], tables["casts"], tables["buys"], tables["kills"], tables["damage"],
         tables["spawn_positions"], team_id, team_name, utility_map, side, site_centres,
         self_scout=team_name in {"Cloud9", "Cloud9 GC"},
+        spawn_estimates=spawn_estimates,
     )
     cards = plan["cards"][:3]
     if not cards:
@@ -147,7 +148,7 @@ def _counter_cards(tables, team_name, team_id, map_name, utility_map, side, site
 
 def generate_scouting_report(
     tables, team_name, team_id, map_name, selected_side, side, shapes, site_centres,
-    image_exporter=None, generated_on=None,
+    image_exporter=None, generated_on=None, spawn_estimates=None,
 ):
     """Build a standalone, print-focused HTML report containing aggregates only."""
     rounds = tables["rounds"]
@@ -171,7 +172,13 @@ def generate_scouting_report(
         placeable["y"] = pd.to_numeric(placeable["landing_y"], errors="coerce").fillna(
             pd.to_numeric(placeable["y"], errors="coerce"),
         )
-    zones = label_zones(aggregate_zone_cells(placeable, denominator), utility_map, site_centres) if utility_map else pd.DataFrame()
+    if utility_map:
+        cell_zones = label_zones(aggregate_zone_cells(placeable, denominator), utility_map, site_centres)
+        zones = disambiguate_zone_labels(
+            merge_zone_cells(cell_zones), utility_map, site_centres,
+        )
+    else:
+        zones = pd.DataFrame()
     map_title = "All maps" if str(map_name).casefold() == "all maps" else str(map_name).title()
     spatial_title = f"Most-played map: {utility_map.title()}" if str(map_name).casefold() == "all maps" and utility_map else map_title
 
@@ -202,7 +209,9 @@ def generate_scouting_report(
             f"{escape(selected_side)} rounds ({int(strongest['rounds_used'])}/{int(strongest['total_rounds'])})."
         )
     operator_markup = _operator_summary(rounds, tables["buys"], team_id, map_name, selected_side, team_name)
-    counters = _counter_cards(tables, team_name, team_id, map_name, utility_map, side, site_centres) if utility_map else ""
+    counters = _counter_cards(
+        tables, team_name, team_id, map_name, utility_map, side, site_centres, spawn_estimates,
+    ) if utility_map else ""
     report_date = (generated_on or date.today()).isoformat()
     scope_note = (
         f" Spatial utility uses the team's most-played map, {escape(spatial_title)}, because coordinates cannot be combined across maps."

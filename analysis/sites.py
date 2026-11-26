@@ -2,7 +2,9 @@
 
 import hashlib
 import json
+import math
 from pathlib import Path
+import re
 
 import numpy as np
 import pandas as pd
@@ -121,7 +123,7 @@ def site_label(map_name, x, y, site_centres):
         return "Site unknown"
     sites = site_centres.get(str(map_name).casefold(), {})
     if not sites:
-        return "Site unknown"
+        return "Unlabeled area" if str(map_name).casefold() == "summit" else "Site unknown"
     letter, centre = min(
         sites.items(),
         key=lambda item: np.linalg.norm(point - np.asarray([item[1]["x"], item[1]["y"]])),
@@ -134,7 +136,45 @@ def site_label(map_name, x, y, site_centres):
     return "mid"
 
 
-def label_zones(zones, map_name, site_centres):
+def disambiguate_zone_labels(zones, map_name, site_centres):
+    """Append a compass hint when independent zones would otherwise share a title."""
+    labeled = zones.copy()
+    if labeled.empty or "site_label" not in labeled:
+        return labeled
+    map_sites = site_centres.get(str(map_name).casefold(), {})
+    duplicated = labeled["site_label"].duplicated(keep=False)
+    for label, indices in labeled[duplicated].groupby("site_label", sort=False).groups.items():
+        indices = list(indices)
+        match = re.search(r"(?:near\s+)?([A-Z])\s+site", str(label), flags=re.IGNORECASE)
+        if match and match.group(1).upper() in map_sites:
+            site = map_sites[match.group(1).upper()]
+            anchor_x, anchor_y = float(site["x"]), float(site["y"])
+        elif map_sites:
+            anchor_x = sum(float(site["x"]) for site in map_sites.values()) / len(map_sites)
+            anchor_y = sum(float(site["y"]) for site in map_sites.values()) / len(map_sites)
+        else:
+            anchor_x = float(labeled.loc[indices, "x"].median())
+            anchor_y = float(labeled.loc[indices, "y"].median())
+
+        directions = []
+        for index in indices:
+            dx = float(labeled.at[index, "x"]) - anchor_x
+            dy = float(labeled.at[index, "y"]) - anchor_y
+            angle = (math.degrees(math.atan2(dy, dx)) + 360) % 360
+            directions.append((index, ("east", "north-east", "north", "north-west", "west",
+                                       "south-west", "south", "south-east")[int((angle + 22.5) // 45) % 8]))
+        counts = {}
+        for _, direction in directions:
+            counts[direction] = counts.get(direction, 0) + 1
+        seen = {}
+        for index, direction in directions:
+            seen[direction] = seen.get(direction, 0) + 1
+            hint = f"{direction} {seen[direction]}" if counts[direction] > 1 else direction
+            labeled.at[index, "site_label"] = f"{label} ({hint})"
+    return labeled
+
+
+def label_zones(zones, map_name, site_centres, disambiguate=False):
     """Add approximate map-site labels to aggregated hot zones."""
     labeled = zones.copy()
     if labeled.empty:
@@ -144,4 +184,4 @@ def label_zones(zones, map_name, site_centres):
         site_label(map_name, row.x, row.y, site_centres)
         for row in labeled.itertuples()
     ]
-    return labeled
+    return disambiguate_zone_labels(labeled, map_name, site_centres) if disambiguate else labeled

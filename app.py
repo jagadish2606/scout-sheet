@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from analysis.abilities import CATEGORIES, ability_mapping
-from analysis.catalog import load_series_event_map, team_circuit_labels
+from analysis.catalog import CIRCUITS, load_series_event_map, team_circuit_labels
 from analysis.counter_plan import generate_counter_plan
 from analysis.landing import build_walkable_mask
 from analysis.map_shape import density_for_points, load_cached_map_shapes
@@ -19,12 +19,13 @@ from analysis.operator import (
     calculate_buy_rates,
     calculate_handoff_rate,
     estimate_spawn_anchors,
+    load_spawn_estimates,
     operator_engagements,
 )
 from analysis.report import generate_scouting_report
-from analysis.sites import label_zones, load_cached_site_centres, site_label
+from analysis.sites import disambiguate_zone_labels, label_zones, load_cached_site_centres, site_label
 from analysis.text import team_possessive
-from analysis.zones import aggregate_zone_cells, eligible_rounds, filter_casts, match_casts_to_rounds
+from analysis.zones import aggregate_zone_cells, eligible_rounds, filter_casts, match_casts_to_rounds, merge_zone_cells
 from config import DATA_DIR
 
 
@@ -88,6 +89,11 @@ def load_site_shapes(signature):
 
 
 @st.cache_data(show_spinner=False)
+def load_global_spawn_estimates(signature):
+    return load_spawn_estimates(CACHE_DIR / "spawn_estimates.json")
+
+
+@st.cache_data(show_spinner=False)
 def load_event_catalog(signature, series_csv):
     return load_series_event_map(series_csv)
 
@@ -95,11 +101,11 @@ def load_event_catalog(signature, series_csv):
 @st.cache_data(show_spinner="Preparing printable scouting report…")
 def _cached_scouting_report(
     cache_signature, generated_date, team_name, team_id, map_name, selected_side, side,
-    _tables, _shapes, _site_centres,
+    _tables, _shapes, _site_centres, _spawn_estimates,
 ):
     return generate_scouting_report(
         _tables, team_name, team_id, map_name, selected_side, side, _shapes, _site_centres,
-        generated_on=date.fromisoformat(generated_date),
+        spawn_estimates=_spawn_estimates, generated_on=date.fromisoformat(generated_date),
     )
 
 
@@ -227,7 +233,15 @@ def _casts_for_arrow_zone(casts, zones, selected_zone=None, sample_size=80, rand
         zone = zones.iloc[int(selected_zone) - 1]
         cell_x = (pd.to_numeric(candidates["x"], errors="coerce") / 400).map(math.floor)
         cell_y = (pd.to_numeric(candidates["y"], errors="coerce") / 400).map(math.floor)
-        return candidates[cell_x.eq(int(zone["cell_x"])) & cell_y.eq(int(zone["cell_y"]))]
+        cells = zone.get("cells")
+        if not isinstance(cells, (tuple, list)) or not cells:
+            cells = ((int(zone["cell_x"]), int(zone["cell_y"])),)
+        selected = pd.Series(False, index=candidates.index)
+        for selected_x, selected_y in cells:
+            selected |= cell_x.eq(int(selected_x)) & cell_y.eq(int(selected_y))
+        if "ability" in candidates and pd.notna(zone.get("ability")):
+            selected &= candidates["ability"].astype(str).eq(str(zone["ability"]))
+        return candidates[selected]
     return candidates.sample(n=min(int(sample_size), len(candidates)), random_state=random_state)
 
 
@@ -250,6 +264,14 @@ def _persist_filter_value(widget_key, persistent_key):
     value = st.session_state.get(widget_key)
     if value is not None:
         st.session_state[persistent_key] = value
+
+
+def _map_for_team(map_name, map_options, map_counts, default_map, team_changed):
+    if map_name not in map_options:
+        return default_map
+    if team_changed and map_name != "All maps" and int(map_counts.get(map_name, 0)) < 20:
+        return default_map
+    return map_name
 
 
 def _navigate_counter_card(target_tab, map_name, selected_side, team_id, category=None, agent=None):
@@ -625,17 +647,21 @@ def _time_bucket(seconds):
     return "40 s+"
 
 
-def _profile_engagements(kills, damage, buys, spawn_positions, team_id, map_name, site_centres):
+def _profile_engagements(
+    kills, damage, buys, spawn_positions, team_id, map_name, site_centres, spawn_estimates=None,
+):
     engagements = operator_engagements(kills, damage, buys, team_id, map_name, "defender")
     if engagements.empty:
         return engagements, pd.DataFrame(columns=["player_name", "engagements", "aggressive", "standard", "passive", "unknown", "aggressive_share"])
     anchors = estimate_spawn_anchors(spawn_positions)
+    full_anchors = spawn_estimates or {}
     engagements["seconds_into_round"] = pd.to_numeric(engagements["seconds_into_round"], errors="coerce")
     engagements["time_bucket"] = engagements["seconds_into_round"].map(_time_bucket)
     aggression_scores = []
     site_labels = []
     for row in engagements.itertuples(index=False):
-        map_anchors = anchors.get(str(row.map).casefold(), {})
+        map_key = str(row.map).casefold()
+        map_anchors = full_anchors.get(map_key, anchors.get(map_key, {}))
         defender_spawn = map_anchors.get("defender")
         attacker_spawn = map_anchors.get("attacker")
         aggression_scores.append(
@@ -743,7 +769,12 @@ def _render_utility_tab(tables, team_name, team_id, map_name, selected_side, sid
     position_casts = _casts_for_position(filtered_casts, position_mode)
     if position_mode == "Estimated landing":
         st.caption("Estimated landing points use aim direction and the walkability mask; they are not exact utility positions.")
-    zones = label_zones(aggregate_zone_cells(position_casts, denominator), map_name, site_centres)
+    cell_zones = label_zones(
+        aggregate_zone_cells(position_casts, denominator), map_name, site_centres,
+    )
+    zones = disambiguate_zone_labels(
+        merge_zone_cells(cell_zones), map_name, site_centres,
+    )
     shape = shapes.get(map_name)
     arrow_zone = 1 if not zones.empty else None
     if show_dots and position_mode == "Estimated landing":
@@ -800,9 +831,10 @@ def _render_utility_tab(tables, team_name, team_id, map_name, selected_side, sid
             "are approximate, based on plant positions clustered around named site callouts. The grey background "
             "uses all-team cast and kill positions from the local cache rather than Riot map artwork. Estimated "
             "landing points project the caster's aim direction to a density-derived wall or range limit; they "
-            "are estimates, not exact utility landing positions or verified wall geometry."
+            "are estimates, not exact utility landing positions or verified wall geometry. Operator aggression "
+            "uses the saved full-data `cache/spawn_estimates.json` anchors when that map is present, and falls "
+            "back to this team's freeze-end median positions only for maps without a saved estimate."
         )
-
     map_column, zones_column = st.columns([1.7, 1])
     with map_column:
         st.subheader(f"{map_name.title()} · {selected_side.title()}")
@@ -822,7 +854,7 @@ def _render_utility_tab(tables, team_name, team_id, map_name, selected_side, sid
                 st.caption(f"{missing_positions:,} matching casts have no usable position and are omitted from zones.")
     with zones_column:
         st.subheader("Hot zones")
-        st.caption("Cells are approximately 4 m × 4 m; ranking is by distinct rounds used.")
+        st.caption("Neighbouring 4 m cells within 6 m are merged by ability and site; ranking counts distinct rounds.")
         if zones.empty:
             if filtered_casts.empty:
                 st.caption("No hot zones to show for this empty result.")
@@ -846,7 +878,10 @@ def _render_utility_tab(tables, team_name, team_id, map_name, selected_side, sid
         )
 
 
-def _render_operator_tab(tables, team_name, team_id, map_name, selected_side, shapes, site_centres, report_html):
+def _render_operator_tab(
+    tables, team_name, team_id, map_name, selected_side, shapes, site_centres, report_html,
+    spawn_estimates=None,
+):
     _download_report(report_html, "operator")
     rounds, buys = tables["rounds"], tables["buys"]
     rates = calculate_buy_rates(rounds, buys, team_id, map_name)
@@ -863,7 +898,7 @@ def _render_operator_tab(tables, team_name, team_id, map_name, selected_side, sh
     display_map = map_name if map_name == "All maps" else map_name.title()
     engagements, player_aggression = _profile_engagements(
         tables["kills"], tables["damage"], buys, tables["spawn_positions"],
-        team_id, map_name, site_centres,
+        team_id, map_name, site_centres, spawn_estimates,
     )
     primary = selected_rates["players"].iloc[0].to_dict() if not selected_rates["players"].empty else None
     primary_engagements = pd.DataFrame()
@@ -949,7 +984,10 @@ def _render_operator_tab(tables, team_name, team_id, map_name, selected_side, sh
         st.plotly_chart(_operator_map_figure(shapes[map_name], engagements, map_name, site_centres), width="stretch")
 
     st.subheader("Aggressive vs passive angles")
-    st.caption("Spawn anchors are medians of freeze-end player positions by map and side; this is a rough directional proxy.")
+    st.caption(
+        "Aggression uses full-data median freeze-end anchors from cache/spawn_estimates.json when available; "
+        "maps without a saved estimate fall back to this team's medians. It is a rough directional proxy."
+    )
     profiled_players = player_aggression[player_aggression["engagements"].ge(10)]
     if profiled_players.empty:
         st.info("No player has 10 or more defense engagements in this filter; per-player angle profiles are withheld.")
@@ -963,7 +1001,10 @@ def _render_operator_tab(tables, team_name, team_id, map_name, selected_side, sh
     )
 
 
-def _render_counter_plan_tab(tables, team_name, team_id, map_name, selected_side, side, site_centres, report_html):
+def _render_counter_plan_tab(
+    tables, team_name, team_id, map_name, selected_side, side, site_centres, report_html,
+    spawn_estimates=None,
+):
     _download_report(report_html, "counter")
     denominator = eligible_rounds(tables["rounds"], team_id, map_name, side)
     round_count = denominator[["series_id", "game_id", "round_number"]].drop_duplicates().shape[0]
@@ -983,6 +1024,7 @@ def _render_counter_plan_tab(tables, team_name, team_id, map_name, selected_side
         tables["rounds"], tables["casts"], tables["buys"], tables["kills"], tables["damage"],
         tables["spawn_positions"], team_id, team_name, map_name, side, site_centres,
         self_scout=team_name in {"Cloud9", "Cloud9 GC"},
+        spawn_estimates=spawn_estimates,
     )
     cards = plan["cards"]
     if not cards:
@@ -1053,19 +1095,40 @@ def main():
         st.error("The rounds cache has no teams to analyze.")
         st.stop()
 
-    default_team = next(
-        (index for index, name in enumerate(teams["team_name"]) if name == "Cloud9"), 0,
-    )
     st.sidebar.header("Filters")
-    team_index = st.sidebar.selectbox(
-        "Opponent team", range(len(teams)), index=default_team,
-        format_func=lambda index: teams.iloc[index]["label"], key="shared_team",
+    circuit_options = [circuit for circuit in CIRCUITS if circuit in set(teams["circuit"])]
+    if not circuit_options:
+        st.error("No cached teams match the supported circuit list.")
+        st.stop()
+    default_circuit = "VCT Americas" if "VCT Americas" in circuit_options else circuit_options[0]
+    if st.session_state.get("shared_circuit") not in circuit_options:
+        st.session_state["shared_circuit"] = default_circuit
+    selected_circuit = st.sidebar.selectbox("Circuit", circuit_options, key="shared_circuit")
+    circuit_teams = teams[teams["circuit"].eq(selected_circuit)].copy()
+    circuit_teams = circuit_teams.sort_values(
+        ["series_count", "team_name", "team_id"],
+        ascending=[False, True, True], kind="stable",
     )
-    selected_team = teams.iloc[team_index]
+    team_by_id = {
+        str(row["team_id"]): row for _, row in circuit_teams.iterrows()
+    }
+    team_options = list(team_by_id)
+    default_team_id = next(
+        (team_id for team_id, team in team_by_id.items()
+         if selected_circuit == "VCT Americas" and team["team_name"] == "Cloud9"),
+        team_options[0],
+    )
+    if st.session_state.get("shared_team") not in team_options:
+        st.session_state["shared_team"] = default_team_id
+    selected_team_id = st.sidebar.selectbox(
+        "Team", team_options, key="shared_team",
+        format_func=lambda value: team_by_id[str(value)]["label"],
+    )
+    selected_team = team_by_id[str(selected_team_id)]
     team_id = str(selected_team["team_id"])
 
     team_rounds = round_index[round_index["team_id"].astype(str).eq(team_id)]
-    map_counts = team_rounds.drop_duplicates(["series_id", "game_id"]).groupby("map").size()
+    map_counts = team_rounds.drop_duplicates(["series_id", "game_id", "round_number"]).groupby("map").size()
     maps = map_counts.sort_values(ascending=False, kind="stable").index.astype(str).tolist()
     if not maps:
         st.warning("No rounds are available for this team.")
@@ -1091,14 +1154,30 @@ def main():
         map_options = maps
         map_widget_key = f"utility_map_widget_{team_id}"
         persistent_map_key = f"utility_map_selection_{team_id}"
-    if persistent_map_key not in st.session_state or st.session_state[persistent_map_key] not in map_options:
-        st.session_state[persistent_map_key] = map_options[0]
-    if map_widget_key not in st.session_state or st.session_state[map_widget_key] not in map_options:
-        st.session_state[map_widget_key] = st.session_state[persistent_map_key]
+    default_map = map_options[0] if active_tab == "Operator Profiler" else maps[0]
+    team_changed = st.session_state.get("last_map_team_id") != team_id
+    map_tab = "Counter Plan" if active_tab in {"Counter Plan", "Self-scout: predictable habits"} else active_tab
+    if team_changed and st.session_state.get("last_map_tab") == map_tab:
+        selected_map = _map_for_team(
+            st.session_state.get("last_visible_map"), map_options, map_counts, maps[0], True,
+        )
+        st.session_state[persistent_map_key] = selected_map
+        st.session_state[map_widget_key] = selected_map
+    else:
+        st.session_state[persistent_map_key] = _map_for_team(
+            st.session_state.get(persistent_map_key), map_options, map_counts, default_map, team_changed,
+        )
+        st.session_state[map_widget_key] = _map_for_team(
+            st.session_state.get(map_widget_key, st.session_state[persistent_map_key]),
+            map_options, map_counts, default_map, team_changed,
+        )
+    st.session_state["last_map_team_id"] = team_id
     map_name = st.sidebar.selectbox(
         "Map", map_options, key=map_widget_key,
         on_change=_persist_filter_value, args=(map_widget_key, persistent_map_key),
     )
+    st.session_state["last_visible_map"] = map_name
+    st.session_state["last_map_tab"] = map_tab
     if "shared_side" not in st.session_state:
         st.session_state["shared_side"] = "defense"
     selected_side = st.sidebar.selectbox("Side", ("attack", "defense"), key="shared_side")
@@ -1107,13 +1186,16 @@ def main():
         tables = load_tables(signature, team_id, map_name)
         shapes = load_shapes((CACHE_DIR / "map_shapes.npz").stat().st_mtime_ns)
         site_centres = load_site_shapes((CACHE_DIR / "site_centres.json").stat().st_mtime_ns)
+        spawn_estimates_path = CACHE_DIR / "spawn_estimates.json"
+        spawn_signature = spawn_estimates_path.stat().st_mtime_ns if spawn_estimates_path.is_file() else None
+        spawn_estimates = load_global_spawn_estimates(spawn_signature)
     except FileNotFoundError as error:
         st.error(f"Cache file missing: {error.filename or error}. Rebuild it with `uv run python build_cache.py --all`.")
         st.stop()
     report_html = _cached_scouting_report(
-        (signature, (CACHE_DIR / "map_shapes.npz").stat().st_mtime_ns),
+        (signature, (CACHE_DIR / "map_shapes.npz").stat().st_mtime_ns, spawn_signature),
         date.today().isoformat(), selected_team["team_name"], team_id, map_name,
-        selected_side, side, tables, shapes, site_centres,
+        selected_side, side, tables, shapes, site_centres, spawn_estimates,
     )
     title_col, badge_col = st.columns([5, 1])
     title_col.title("Scout Sheet")
@@ -1124,6 +1206,8 @@ def main():
             unsafe_allow_html=True,
         )
     st.caption("VALORANT opponent scouting from local GRID-derived Parquet caches")
+    if str(map_name).casefold() == "summit" and not site_centres.get("summit"):
+        st.caption("Site labels are hidden for Summit because no verified plant-derived site centres are available.")
     utility_tab, operator_tab, counter_tab = st.tabs(
         ["Utility Map", "Operator Profiler", counter_tab_label], key="scout_tabs", on_change="rerun",
     )
@@ -1137,13 +1221,13 @@ def main():
         if operator_tab.open:
             _render_operator_tab(
                 tables, selected_team["team_name"], team_id, map_name, selected_side,
-                shapes, site_centres, report_html,
+                shapes, site_centres, report_html, spawn_estimates,
             )
     with counter_tab:
         if counter_tab.open:
             _render_counter_plan_tab(
                 tables, selected_team["team_name"], team_id, map_name, selected_side, side,
-                site_centres, report_html,
+                site_centres, report_html, spawn_estimates,
             )
 
 
