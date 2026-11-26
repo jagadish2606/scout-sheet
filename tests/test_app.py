@@ -37,6 +37,8 @@ class UtilityMapAppTests(unittest.TestCase):
             cache_dir.mkdir()
             for name in ("rounds", "casts", "kills", "damage", "buys", "spawn_positions", "plants"):
                 (cache_dir / f"{name}.parquet").touch()
+            (cache_dir / "map_shapes.npz").touch()
+            (cache_dir / "site_centres.json").touch()
 
             self.assertEqual(_missing_prerequisites(data_dir, cache_dir), (False, []))
             (cache_dir / "casts.parquet").unlink()

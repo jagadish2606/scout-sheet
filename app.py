@@ -9,9 +9,10 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from analysis.abilities import CATEGORIES, ability_mapping
+from analysis.catalog import load_series_event_map, team_circuit_labels
 from analysis.counter_plan import generate_counter_plan
 from analysis.landing import build_walkable_mask
-from analysis.map_shape import density_for_points, load_map_shapes
+from analysis.map_shape import density_for_points, load_cached_map_shapes
 from analysis.operator import (
     aggressiveness_label,
     aggressiveness_score,
@@ -21,7 +22,7 @@ from analysis.operator import (
     operator_engagements,
 )
 from analysis.report import generate_scouting_report
-from analysis.sites import label_zones, load_site_centres, site_label
+from analysis.sites import label_zones, load_cached_site_centres, site_label
 from analysis.text import team_possessive
 from analysis.zones import aggregate_zone_cells, eligible_rounds, filter_casts, match_casts_to_rounds
 from config import DATA_DIR
@@ -31,22 +32,64 @@ PROJECT_DIR = Path(__file__).parent
 CACHE_DIR = PROJECT_DIR / "cache"
 TABLE_NAMES = ("rounds", "casts", "kills", "damage", "buys", "spawn_positions", "plants")
 SENTINEL_AGENTS = {"chamber", "cypher", "deadlock", "killjoy", "sage", "vyse"}
+ROUND_INDEX_COLUMNS = ("series_id", "team_id", "team_name", "map", "game_id", "round_number")
+TABLE_READ_COLUMNS = {
+    "rounds": ("series_id", "game_id", "game_number", "map", "round_number", "round_start_time", "round_live_time", "team_id", "team_name", "opponent_name", "side", "won_round"),
+    "casts": ("series_id", "game_id", "map", "round_number", "seconds_into_round", "player_id", "player_name", "team_id", "team_name", "side", "agent", "ability", "slot", "x", "y", "z", "view_x", "view_y", "view_z", "quality", "landing_x", "landing_y", "landing_method", "estimated"),
+    "kills": ("series_id", "game_id", "map", "round_number", "seconds_into_round", "event_time", "killer_id", "killer_name", "killer_team_id", "killer_team_name", "killer_side", "killer_agent", "victim_id", "victim_name", "victim_team_id", "victim_team_name", "victim_side", "victim_agent", "weapon", "killer_x", "killer_y", "victim_x", "victim_y"),
+    "damage": ("series_id", "game_id", "map", "round_number", "seconds_into_round", "event_time", "player_id", "player_name", "team_id", "team_name", "side", "agent", "victim_id", "victim_name", "victim_team_id", "victim_team_name", "victim_side", "weapon", "damage_amount", "x", "y", "victim_x", "victim_y"),
+    "buys": ("series_id", "game_id", "map", "round_number", "player_id", "player_name", "team_id", "side", "agent", "primary_weapon", "has_operator"),
+    "spawn_positions": ("series_id", "game_id", "map", "round_number", "player_id", "player_name", "team_id", "team_name", "side", "agent", "x", "y"),
+    "plants": ("series_id", "game_id", "map", "round_number", "planter_id", "team_id", "team_name", "x", "y"),
+}
 
 
 st.set_page_config(page_title="Scout Sheet", layout="wide")
 
 
 @st.cache_data(show_spinner=False)
-def load_tables(signature):
-    return {
-        name: pd.read_parquet(CACHE_DIR / f"{name}.parquet")
-        for name in TABLE_NAMES
-    }
+def load_round_index(signature):
+    return pd.read_parquet(CACHE_DIR / "rounds.parquet", columns=list(ROUND_INDEX_COLUMNS))
+
+
+@st.cache_data(show_spinner=False)
+def load_tables(signature, team_id, map_name):
+    """Read projected columns for the selected team and map from Parquet."""
+    loaded = {}
+    for name in TABLE_NAMES:
+        path = CACHE_DIR / f"{name}.parquet"
+        columns = list(TABLE_READ_COLUMNS[name])
+        if name == "plants":
+            loaded[name] = pd.DataFrame(columns=columns)
+            continue
+        if name in {"rounds", "casts", "damage", "buys", "spawn_positions"}:
+            filters = [("team_id", "==", str(team_id))]
+        elif name == "kills":
+            filters = [
+                [("killer_team_id", "==", str(team_id))],
+                [("victim_team_id", "==", str(team_id))],
+            ]
+        else:
+            filters = None
+        if name == "casts" and str(map_name).casefold() != "all maps":
+            filters = [*filters, ("map", "==", str(map_name))]
+        loaded[name] = pd.read_parquet(path, columns=columns, filters=filters)
+    return loaded
 
 
 @st.cache_data(show_spinner="Building map position densities…")
-def load_shapes(casts, kills):
-    return load_map_shapes(casts, kills, CACHE_DIR)
+def load_shapes(signature):
+    return load_cached_map_shapes(CACHE_DIR)
+
+
+@st.cache_data(show_spinner=False)
+def load_site_shapes(signature):
+    return load_cached_site_centres(CACHE_DIR)
+
+
+@st.cache_data(show_spinner=False)
+def load_event_catalog(signature, series_csv):
+    return load_series_event_map(series_csv)
 
 
 @st.cache_data(show_spinner="Preparing printable scouting report…")
@@ -70,6 +113,10 @@ def _download_report(report_html, tab_key):
 
 def _missing_prerequisites(data_dir=DATA_DIR, cache_dir=CACHE_DIR):
     missing_cache = [name for name in TABLE_NAMES if not (Path(cache_dir) / f"{name}.parquet").is_file()]
+    missing_cache.extend(
+        name for name in ("map_shapes.npz", "site_centres.json")
+        if not (Path(cache_dir) / name).is_file()
+    )
     return not Path(data_dir).is_dir(), missing_cache
 
 
@@ -235,19 +282,8 @@ def _sentinel_summary(buys, team_id, map_name):
     return "No sentinel played on this map."
 
 
-def _team_labels(rounds):
-    teams = rounds.groupby("team_id", dropna=True).agg(
-        team_name=("team_name", _most_common),
-        series_count=("series_id", "nunique"),
-    ).reset_index()
-    teams["label"] = teams.apply(
-        lambda row: f"{row['team_name'] or 'Unknown team'} [{row['team_id']}]", axis=1,
-    )
-    return teams.sort_values(
-        ["series_count", "label"],
-        ascending=[False, True],
-        key=lambda values: values.str.casefold() if values.name == "label" else values,
-    ).reset_index(drop=True)
+def _team_labels(rounds, event_by_series=None):
+    return team_circuit_labels(rounds, event_by_series or {})
 
 
 def _map_figure(
@@ -1004,13 +1040,15 @@ def main():
         st.stop()
     try:
         signature = tuple((CACHE_DIR / f"{name}.parquet").stat().st_mtime_ns for name in TABLE_NAMES)
-        tables = load_tables(signature)
+        round_index = load_round_index(signature)
+        series_csv = DATA_DIR / "val" / "series.csv"
+        event_signature = series_csv.stat().st_mtime_ns
+        event_by_series = load_event_catalog(event_signature, str(series_csv))
     except FileNotFoundError as error:
-        st.error(f"Cache file missing: {error.filename or error}. Build it with `uv run build_cache.py` first.")
+        st.error(f"Cache or GRID index file missing: {error.filename or error}. Build it with `uv run python build_cache.py` first.")
         st.stop()
 
-    rounds, casts, kills = (tables[name] for name in ("rounds", "casts", "kills"))
-    teams = _team_labels(rounds)
+    teams = _team_labels(round_index, event_by_series)
     if teams.empty:
         st.error("The rounds cache has no teams to analyze.")
         st.stop()
@@ -1026,7 +1064,7 @@ def main():
     selected_team = teams.iloc[team_index]
     team_id = str(selected_team["team_id"])
 
-    team_rounds = rounds[rounds["team_id"].astype(str).eq(team_id)]
+    team_rounds = round_index[round_index["team_id"].astype(str).eq(team_id)]
     map_counts = team_rounds.drop_duplicates(["series_id", "game_id"]).groupby("map").size()
     maps = map_counts.sort_values(ascending=False, kind="stable").index.astype(str).tolist()
     if not maps:
@@ -1065,11 +1103,16 @@ def main():
         st.session_state["shared_side"] = "defense"
     selected_side = st.sidebar.selectbox("Side", ("attack", "defense"), key="shared_side")
     side = "attacker" if selected_side == "attack" else "defender"
-    shapes = load_shapes(casts, kills)
-    plants = tables["plants"]
-    site_centres = load_site_centres(plants, CACHE_DIR)
+    try:
+        tables = load_tables(signature, team_id, map_name)
+        shapes = load_shapes((CACHE_DIR / "map_shapes.npz").stat().st_mtime_ns)
+        site_centres = load_site_shapes((CACHE_DIR / "site_centres.json").stat().st_mtime_ns)
+    except FileNotFoundError as error:
+        st.error(f"Cache file missing: {error.filename or error}. Rebuild it with `uv run python build_cache.py --all`.")
+        st.stop()
     report_html = _cached_scouting_report(
-        signature, date.today().isoformat(), selected_team["team_name"], team_id, map_name,
+        (signature, (CACHE_DIR / "map_shapes.npz").stat().st_mtime_ns),
+        date.today().isoformat(), selected_team["team_name"], team_id, map_name,
         selected_side, side, tables, shapes, site_centres,
     )
     title_col, badge_col = st.columns([5, 1])

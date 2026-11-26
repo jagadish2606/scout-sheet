@@ -11,7 +11,7 @@ Scout Sheet is a VALORANT opponent-scouting tool for coaches, built for the Clou
 
 ## How it works
 
-- `build_cache.py` streams the local GRID feeds and writes derived Parquet tables only to the git-ignored `cache/` directory. The default selection includes Cloud9 and Cloud9 GC series plus opponents' series from the same events; use `--limit 3` for a small smoke build or `--series-ids ID ...` for explicit series.
+- `build_cache.py` streams the local GRID feeds and writes derived Parquet tables only to the git-ignored `cache/` directory. The default selection includes Cloud9 and Cloud9 GC series plus opponents' series from the same events; use `--limit 3` for a small smoke build or `--series-ids ID ...` for explicit series. `--all` incrementally processes all 857 VALORANT series with multiple workers, resumable per-series Parquet shards, progress/ETA, and a bounded-memory merge.
 - The app reads those cached tables only. It never needs to copy GRID data into this repository; keep the starter repository beside Scout Sheet or set `STL_DATA_DIR` to its path.
 - Utility percentages use distinct team/map/side rounds as the denominator. Cast filters do not silently change that denominator. Map silhouettes use observed positions, not Riot map artwork; site names and aim-based landing estimates are approximate, not verified geometry or exact projectile simulations.
 - The report contains rendered aggregates and a generated chart, not raw event envelopes. Its map is one map at a time; when the map filter is `All maps`, spatial utility uses the team's most-played map and identifies it in the report.
@@ -47,7 +47,13 @@ Scout Sheet is a VALORANT opponent-scouting tool for coaches, built for the Clou
    uv run python build_cache.py
    ```
 
-   The full default selection covers about 97 series; allow roughly 15–30 minutes on a typical laptop, depending on storage and CPU. The first run also reads local GRID feeds; no feed data is copied into the project. `uv run python build_cache.py --limit 3` is a quicker smoke test.
+   The default selection covers about 97 Cloud9 and opponent series. To cover every VALORANT team, first benchmark 20 not-yet-cached series and review the reported estimate:
+
+   ```sh
+   uv run python build_cache.py --all --limit 20
+   ```
+
+   After reviewing the time and disk estimate, build all remaining series with `uv run python build_cache.py --all`; completed series are skipped on subsequent runs. Use `--workers 4` to set the parallel worker count. Builds stream local GRID feeds; no feed data is copied into the project.
 
 5. Launch Scout Sheet:
 
@@ -55,7 +61,7 @@ Scout Sheet is a VALORANT opponent-scouting tool for coaches, built for the Clou
    uv run streamlit run app.py
    ```
 
-   Open `http://localhost:8501`. If the source data folder or required cache tables are missing, the app displays this setup guide rather than failing with a traceback.
+   Open `http://localhost:8501`. If the source data folder, tables, or global map artifacts are missing, the app displays this setup guide rather than failing with a traceback. Teams are grouped by their event circuit and show cached series counts.
 
 The cache includes `rounds.parquet`, `casts.parquet`, `kills.parquet`, `damage.parquet`, `buys.parquet`, `spawn_positions.parquet`, and `plants.parquet`. Feeds are streamed, invalid sessions and rolled-back games are excluded, and all derived tables and map artifacts stay in ignored `cache/`. Cast, kill, and damage timing is relative to `round-ended-freezetime`, so negative times represent buy phase; missing or generic player names are enriched only when `meta/players.csv` provides a more informative name.
 

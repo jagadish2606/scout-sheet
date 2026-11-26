@@ -7,6 +7,7 @@ from analysis.landing import (
     add_landing_estimates,
     build_walkable_mask,
     calibrate_thrown_ranges,
+    calibrate_thrown_ranges_batches,
     estimate_cast_landing,
     landing_sanity_report,
     ray_march_landing,
@@ -123,6 +124,28 @@ class LandingTests(unittest.TestCase):
         self.assertEqual(adjustment["old_maximum"], 5500)
         self.assertEqual(adjustment["new_maximum"], 4400)
         self.assertEqual(ranges[("generic", "poison-cloud")][2], 4400)
+
+    def test_batch_calibration_matches_single_frame_calibration(self):
+        shape = {
+            "density": np.ones((3, 401)),
+            "x": np.arange(401, dtype=float) * 50,
+            "y": np.arange(3, dtype=float) * 50,
+        }
+        casts = pd.DataFrame([
+            {
+                "map": "Lotus", "agent": "viper", "ability": "poison-cloud",
+                "x": 1000 + index * 100, "y": 50,
+                "view_x": 1, "view_y": 0, "view_z": 0,
+            }
+            for index in range(10)
+        ])
+
+        single = calibrate_thrown_ranges(casts, {"Lotus": shape})
+        batches = calibrate_thrown_ranges_batches(
+            (casts.iloc[:4], casts.iloc[4:]), {"Lotus": shape},
+        )
+
+        self.assertEqual(single, batches)
 
     def test_sanity_report_flags_median_equal_to_the_effective_maximum(self):
         shape = {

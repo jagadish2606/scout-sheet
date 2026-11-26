@@ -6,10 +6,22 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
-from analysis.report import generate_scouting_report
+from analysis.report import _zone_rows, generate_scouting_report
 
 
 class ScoutingReportTests(unittest.TestCase):
+    def test_zone_rows_separate_ability_and_agent_names(self):
+        zones = pd.DataFrame([{
+            "site_label": "B site", "ability_name": "Shear", "agent": "vyse",
+            "player_name": "OXY", "rounds_used": 12, "total_rounds": 20,
+            "percentage": 60.0, "series_count": 3,
+        }])
+
+        markup = _zone_rows(zones, "defense", "Lotus")
+
+        self.assertIn("<b>B site</b><span class='ability-name'>Shear</span>", markup)
+        self.assertIn("<b>Agent:</b> Vyse", markup)
+        self.assertNotIn("ShearVyse", markup)
     @staticmethod
     def _fixtures():
         rounds = pd.DataFrame([

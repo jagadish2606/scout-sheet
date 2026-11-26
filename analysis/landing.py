@@ -242,26 +242,35 @@ def add_landing_estimates(casts, shapes, thrown_ranges=None):
 
 def calibrate_thrown_ranges(casts, shapes, hit_threshold=0.4, reduction=0.8):
     """Lower configured thrown caps once when too many valid rays reach their limit."""
+    return calibrate_thrown_ranges_batches((casts,), shapes, hit_threshold, reduction)
+
+
+def calibrate_thrown_ranges_batches(cast_frames, shapes, hit_threshold=0.4, reduction=0.8):
+    """Calibrate thrown caps across a stream of per-series cast frames."""
     ranges = {key: tuple(value) for key, value in THROWN_RANGES.items()}
     masks = {map_name: build_walkable_mask(shape) for map_name, shape in shapes.items()}
-    groups = {}
+    counts = {}
     columns = ["map", "agent", "ability", "x", "y", "view_x", "view_y", "view_z"]
-    for values in casts[columns].itertuples(index=False, name=None):
-        cast = dict(zip(columns, values))
-        rule, _ = _landing_rule(cast["agent"], cast["ability"], ranges)
-        if rule == "thrown":
+    for casts in cast_frames:
+        if casts.empty or not set(columns).issubset(casts.columns):
+            continue
+        for values in casts[columns].itertuples(index=False, name=None):
+            cast = dict(zip(columns, values))
+            rule, _ = _landing_rule(cast["agent"], cast["ability"], ranges)
+            if rule != "thrown":
+                continue
             key = _range_key(cast["agent"], cast["ability"], ranges)
-            groups.setdefault(key, []).append(cast)
+            method = estimate_cast_landing(cast, shapes, masks, ranges)["landing_method"]
+            stats = counts.setdefault(key, {"valid_rays": 0, "max_hits": 0})
+            if method in {"wall_hit", "max_range"}:
+                stats["valid_rays"] += 1
+                stats["max_hits"] += method == "max_range"
 
     adjustments = {}
-    for range_key, group in groups.items():
-        methods = [
-            estimate_cast_landing(cast, shapes, masks, ranges)["landing_method"]
-            for cast in group
-        ]
-        usable = [method for method in methods if method in {"wall_hit", "max_range"}]
-        max_hits = usable.count("max_range")
-        hit_fraction = max_hits / len(usable) if usable else 0.0
+    for range_key, stats in counts.items():
+        valid_rays = stats["valid_rays"]
+        max_hits = stats["max_hits"]
+        hit_fraction = max_hits / valid_rays if valid_rays else 0.0
         if hit_fraction <= hit_threshold:
             continue
         base_range, minimum, old_maximum = ranges[range_key]
@@ -272,7 +281,7 @@ def calibrate_thrown_ranges(casts, shapes, hit_threshold=0.4, reduction=0.8):
             ranges[range_key] = (base_range, minimum, new_maximum)
             adjustments[range_key] = {
                 "max_hits": max_hits,
-                "valid_rays": len(usable),
+                "valid_rays": valid_rays,
                 "hit_fraction": hit_fraction,
                 "old_maximum": old_maximum,
                 "new_maximum": new_maximum,

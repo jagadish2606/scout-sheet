@@ -1,6 +1,9 @@
 import argparse
 import csv
+import os
+import time
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import pandas as pd
@@ -9,12 +12,23 @@ from analysis.extract import TABLE_COLUMNS, extract_series
 from analysis.landing import (
     add_landing_estimates,
     calibrate_thrown_ranges,
+    calibrate_thrown_ranges_batches,
     print_landing_method_counts,
     print_landing_sanity_report,
 )
 from analysis.map_shape import load_map_shapes
 from analysis.sites import load_site_centres
 from config import DATA_DIR
+from analysis.incremental_cache import (
+    bootstrap_existing_cache,
+    combine_series_shards,
+    iter_series_tables,
+    read_series_table,
+    series_is_complete,
+    shard_disk_bytes,
+    write_series_casts,
+    write_series_shard,
+)
 
 
 CLOUD9_NAMES = {"Cloud9", "Cloud9 GC"}
@@ -79,6 +93,186 @@ def select_series_ids(data_dir=DATA_DIR):
     return [str(row["series_id"]) for row in series_rows if str(row["series_id"]) in selected]
 
 
+def all_series_ids(data_dir=DATA_DIR):
+    with (Path(data_dir) / "val" / "series.csv").open(newline="", encoding="utf-8") as file:
+        return [str(row["series_id"]) for row in csv.DictReader(file) if row.get("series_id")]
+
+
+def _extract_series_to_shard(series_id, data_dir, shard_root):
+    if series_is_complete(shard_root, series_id):
+        return str(series_id), 0.0, "cached"
+    started = time.perf_counter()
+    extracted = extract_series(series_id, data_dir=data_dir)
+    write_series_shard(shard_root, series_id, extracted)
+    return str(series_id), time.perf_counter() - started, "processed"
+
+
+def _shape_inputs(series_ids, shard_root):
+    cast_chunks, kill_chunks = [], []
+    for series_id in series_ids:
+        casts = read_series_table(shard_root, series_id, "casts", ["map", "x", "y"])
+        kills = read_series_table(
+            shard_root, series_id, "kills",
+            ["map", "killer_x", "killer_y", "victim_x", "victim_y"],
+        )
+        if not casts.empty:
+            cast_chunks.append(casts)
+        if not kills.empty:
+            kill_chunks.append(kills)
+    cast_points = pd.concat(cast_chunks, ignore_index=True) if cast_chunks else pd.DataFrame(columns=["map", "x", "y"])
+    kill_points = pd.concat(kill_chunks, ignore_index=True) if kill_chunks else pd.DataFrame(
+        columns=["map", "killer_x", "killer_y", "victim_x", "victim_y"],
+    )
+    return cast_points, kill_points
+
+
+def _format_duration(seconds):
+    seconds = max(0, int(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {seconds}s"
+    return f"{seconds}s"
+
+
+def _table_bytes(cache_dir):
+    return sum(
+        (Path(cache_dir) / f"{table_name}.parquet").stat().st_size
+        for table_name in TABLE_COLUMNS
+        if (Path(cache_dir) / f"{table_name}.parquet").is_file()
+    )
+
+
+def build_all_cache(limit=None, data_dir=DATA_DIR, cache_dir=None, workers=None):
+    """Incrementally extract all VALORANT series and publish consolidated Parquet tables."""
+    data_dir = Path(data_dir)
+    cache_dir = Path(cache_dir) if cache_dir is not None else Path(__file__).parent / "cache"
+    shard_root = cache_dir / "series_shards"
+    all_ids = all_series_ids(data_dir)
+    initial_table_bytes = _table_bytes(cache_dir)
+
+    bootstrap_existing_cache(cache_dir, shard_root)
+    already_cached = [series_id for series_id in all_ids if series_is_complete(shard_root, series_id)]
+    uncached = [series_id for series_id in all_ids if not series_is_complete(shard_root, series_id)]
+    requested = uncached[:limit] if limit is not None else uncached
+    shard_bytes_before = shard_disk_bytes(shard_root)
+    worker_count = max(1, int(workers or min(4, os.cpu_count() or 1)))
+    print(
+        f"VALORANT series: {len(all_ids):,}; cached: {len(already_cached):,}; "
+        f"to process: {len(requested):,}; workers: {worker_count}", flush=True,
+    )
+
+    extraction_started = time.perf_counter()
+    worker_seconds = []
+    failures = []
+    if requested:
+        with ProcessPoolExecutor(max_workers=worker_count) as executor:
+            futures = {
+                executor.submit(_extract_series_to_shard, series_id, str(data_dir), str(shard_root)): series_id
+                for series_id in requested
+            }
+            for index, future in enumerate(as_completed(futures), start=1):
+                series_id = futures[future]
+                try:
+                    result_id, elapsed, status = future.result()
+                    if status == "processed":
+                        worker_seconds.append(elapsed)
+                    print(f"[{index}/{len(requested)}] {status}: {result_id} ({elapsed:.1f}s)", flush=True)
+                except Exception as error:
+                    failures.append((str(series_id), f"{type(error).__name__}: {error}"))
+                    print(f"[{index}/{len(requested)}] FAILED: {series_id} — {error}", flush=True)
+                completed = index
+                elapsed_wall = time.perf_counter() - extraction_started
+                remaining = len(requested) - completed
+                eta = elapsed_wall * remaining / completed if completed else 0
+                print(
+                    f"  progress {completed}/{len(requested)} · elapsed {_format_duration(elapsed_wall)} "
+                    f"· ETA {_format_duration(eta)}", flush=True,
+                )
+    extraction_wall = time.perf_counter() - extraction_started
+
+    finalization_started = time.perf_counter()
+    valid_ids = [series_id for series_id in all_ids if series_is_complete(shard_root, series_id)]
+    shape_casts, shape_kills = _shape_inputs(valid_ids, shard_root)
+    shapes = load_map_shapes(shape_casts, shape_kills, cache_dir)
+
+    calibration_started = time.perf_counter()
+    thrown_ranges, adjustments = calibrate_thrown_ranges_batches(
+        iter_series_tables(valid_ids, shard_root, "casts"), shapes,
+    )
+    for series_id in valid_ids:
+        casts = read_series_table(shard_root, series_id, "casts")
+        if casts.empty:
+            continue
+        write_series_casts(shard_root, series_id, add_landing_estimates(casts, shapes, thrown_ranges))
+    calibration_elapsed = time.perf_counter() - calibration_started
+
+    row_counts, byte_counts = combine_series_shards(valid_ids, shard_root, cache_dir)
+    plants = pd.read_parquet(cache_dir / "plants.parquet")
+    site_centres = load_site_centres(plants, cache_dir)
+    finalization_elapsed = time.perf_counter() - finalization_started
+    print("Final table rows:")
+    for table_name, row_count in row_counts.items():
+        print(f"  {table_name}: {row_count:,} ({byte_counts[table_name] / (1024 ** 2):.1f} MiB)")
+    print(f"Site centres: {sum(len(sites) for sites in site_centres.values()):,} across {len(site_centres):,} maps")
+    print(f"Completed series: {len(valid_ids):,}/{len(all_ids):,}; failed this run: {len(failures):,}")
+    for series_id, reason in failures:
+        print(f"  {series_id}: {reason}")
+    for ability, adjustment in adjustments.items():
+        print(
+            f"  Range calibration {ability}: {adjustment['old_maximum']} → {adjustment['new_maximum']} "
+            f"({adjustment['max_hits']}/{adjustment['valid_rays']} reached max)",
+        )
+
+    processed_count = len(worker_seconds)
+    if processed_count:
+        average_worker = sum(worker_seconds) / processed_count
+        remaining_after = max(0, len(all_ids) - len(valid_ids))
+        per_series_finalize = finalization_elapsed / max(len(valid_ids), 1)
+        full_estimate = len(all_ids) * (average_worker / worker_count + per_series_finalize)
+        remaining_estimate = remaining_after * (average_worker / worker_count + per_series_finalize)
+        print(f"Mean extraction/write time: {average_worker:.2f}s per series ({worker_count} workers)")
+        print(f"Extraction throughput: {extraction_wall / processed_count:.2f}s wall time per series")
+        print(f"Estimated {len(all_ids):,}-series wall time at this rate: {_format_duration(full_estimate)}")
+        print(f"Estimated remaining after this run: {_format_duration(remaining_estimate)}")
+
+    final_table_bytes = sum(byte_counts.values())
+    new_shard_bytes = max(0, shard_disk_bytes(shard_root) - shard_bytes_before)
+    new_series_count = len([series_id for series_id in requested if series_is_complete(shard_root, series_id)])
+    remaining_after = max(0, len(all_ids) - len(valid_ids))
+    table_growth = max(0, final_table_bytes - initial_table_bytes)
+    table_bytes_per_series = (
+        table_growth / new_series_count if new_series_count
+        else final_table_bytes / max(len(valid_ids), 1)
+    )
+    shard_bytes_per_series = (
+        new_shard_bytes / new_series_count if new_series_count
+        else shard_disk_bytes(shard_root) / max(len(valid_ids), 1)
+    )
+    projected_table_bytes = final_table_bytes + table_bytes_per_series * remaining_after
+    projected_shard_bytes = shard_disk_bytes(shard_root) + shard_bytes_per_series * remaining_after
+    print(
+        "Estimated full cache disk size (consolidated tables + resumable shards): "
+        f"{(projected_table_bytes + projected_shard_bytes) / (1024 ** 3):.2f} GiB "
+        f"(tables {projected_table_bytes / (1024 ** 3):.2f} GiB; shards "
+        f"{projected_shard_bytes / (1024 ** 3):.2f} GiB; excludes small metadata files).",
+    )
+    print(
+        f"Extraction phase: {_format_duration(extraction_wall)}; landing recalibration: "
+        f"{_format_duration(calibration_elapsed)}; full finalization: {_format_duration(finalization_elapsed)}",
+    )
+    return {
+        "series_total": len(all_ids), "series_cached": len(valid_ids), "processed": new_series_count,
+        "failures": failures, "rows": row_counts, "worker_seconds": worker_seconds,
+        "extraction_wall": extraction_wall, "finalization_seconds": finalization_elapsed,
+        "table_bytes": final_table_bytes, "shard_bytes": shard_disk_bytes(shard_root),
+        "projected_table_bytes": projected_table_bytes,
+        "projected_shard_bytes": projected_shard_bytes,
+    }
+
+
 def build_cache(series_ids=None, limit=None, data_dir=DATA_DIR, cache_dir=None, sample_rows=5):
     data_dir = Path(data_dir)
     cache_dir = Path(cache_dir) if cache_dir is not None else Path(__file__).parent / "cache"
@@ -128,11 +322,16 @@ def build_cache(series_ids=None, limit=None, data_dir=DATA_DIR, cache_dir=None, 
 
 def main():
     parser = argparse.ArgumentParser(description="Build ignored Parquet caches from local GRID VALORANT feeds.")
+    parser.add_argument("--all", action="store_true", help="Process all VALORANT series incrementally with worker processes.")
     parser.add_argument("--series-ids", nargs="+", help="Series IDs to process instead of the default Cloud9/opponent selection.")
     parser.add_argument("--limit", type=int, help="Process at most this many selected series.")
+    parser.add_argument("--workers", type=int, help="Worker processes for --all (default: up to 4).")
     parser.add_argument("--sample-rows", type=int, default=5, help="Print this many sample rows per table (default: 5; use 0 to suppress).")
     parser.add_argument("--cache-dir", type=Path, help="Cache directory (default: ./cache).")
     args = parser.parse_args()
+    if args.all:
+        build_all_cache(args.limit, cache_dir=args.cache_dir, workers=args.workers)
+        return
     build_cache(args.series_ids, args.limit, cache_dir=args.cache_dir, sample_rows=args.sample_rows)
 
 

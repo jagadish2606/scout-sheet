@@ -104,6 +104,13 @@ def load_site_centres(plants, cache_dir="cache"):
     return sites
 
 
+def load_cached_site_centres(cache_dir="cache"):
+    """Read the site centres already generated from the full cached plant table."""
+    cache_path = Path(cache_dir) / "site_centres.json"
+    with cache_path.open(encoding="utf-8") as file:
+        return json.load(file).get("sites", {})
+
+
 def site_label(map_name, x, y, site_centres):
     """Return a rough site/near-site/mid label for a coordinate."""
     try:

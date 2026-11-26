@@ -150,6 +150,21 @@ def load_map_shapes(casts, kills, cache_dir="cache", bins=240, sigma=1.5):
     return shapes
 
 
+def load_cached_map_shapes(cache_dir="cache"):
+    """Read the already-built global map silhouettes without loading event tables."""
+    cache_path = Path(cache_dir) / "map_shapes.npz"
+    with np.load(cache_path, allow_pickle=False) as archive:
+        result = {}
+        for index, map_name in enumerate(archive["map_names"].tolist()):
+            result[map_name] = {
+                key: archive[f"{key}_{index}"].copy()
+                for key in ("density", "x", "y")
+            }
+            for key in ("x_min", "x_max", "y_min", "y_max", "bins", "position_count"):
+                result[map_name][key] = archive[f"{key}_{index}"].item()
+    return result
+
+
 def density_for_points(points, shape, sigma=10):
     """Rasterize x/y points on the same grid as a cached map shape."""
     if len(points) == 0:

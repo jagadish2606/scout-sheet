@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from analysis.map_shape import load_map_shapes
+from analysis.map_shape import load_cached_map_shapes, load_map_shapes
 
 
 class MapShapeTests(unittest.TestCase):
@@ -23,6 +23,8 @@ class MapShapeTests(unittest.TestCase):
             self.assertAlmostEqual(float(first["Lotus"]["density"].max()), 1.0)
             np.testing.assert_array_equal(first["Lotus"]["density"], second["Lotus"]["density"])
             self.assertTrue((Path(directory) / "map_shapes.npz").is_file())
+            cached = load_cached_map_shapes(directory)
+            np.testing.assert_array_equal(first["Lotus"]["density"], cached["Lotus"]["density"])
 
 
 if __name__ == "__main__":

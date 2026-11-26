@@ -89,8 +89,10 @@ def _zone_rows(zones, side, map_name):
     rows = []
     for zone in zones.head(3).itertuples(index=False):
         rows.append(
-            f"<li><b>{escape(str(zone.site_label))} · {escape(str(zone.ability_name))}</b>"
-            f"<small>{escape(str(zone.agent).title())} · {escape(str(zone.player_name))}; "
+            f"<li><b>{escape(str(zone.site_label))}</b>"
+            f"<span class='ability-name'>{escape(str(zone.ability_name))}</span>"
+            f"<small><b>Agent:</b> {escape(str(zone.agent).title())} · "
+            f"<b>Player:</b> {escape(str(zone.player_name))}; "
             f"{int(zone.rounds_used)}/{int(zone.total_rounds)} {escape(side)} rounds "
             f"({float(zone.percentage):.0f}%), {int(zone.series_count)} series · {escape(map_name)}</small></li>"
         )
@@ -225,6 +227,7 @@ def generate_scouting_report(
     img { display: block; width: 100%; height: auto; max-height: 72mm; object-fit: contain; }
     ol, ul { margin: 1mm 0 0; padding-left: 5mm; }
     li { margin: 0 0 1.4mm; }
+    .ability-name { display: block; font-weight: 700; }
     li small { display: block; color: #475569; }
     .operator p { margin: 1mm 0; }
     .counter { border-top: 1px solid #e2e8f0; padding: 1.5mm 0; }
